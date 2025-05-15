@@ -36,3 +36,36 @@
     transform: rotate(360deg);
   }
 }
+
+/* Fix for viewport fitting */
+.full-height {
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+}
+
+/* Element containment */
+.contained {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Custom styles that aren't covered by Tailwind */
+.custom-scroll::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.custom-scroll::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 2px;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 2px;
+}
+
+.custom-scroll::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
