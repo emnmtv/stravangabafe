@@ -97,6 +97,54 @@ export const updateUserProfile = async (token, profileData) => {
   }
 };
 
+// Profile picture upload
+export const uploadProfilePicture = async (token, imageFile) => {
+  try {
+    // Validate inputs
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required',
+      };
+    }
+    
+    if (!imageFile) {
+      return {
+        success: false,
+        message: 'Image file is required',
+      };
+    }
+    
+    // Create form data
+    const formData = new FormData();
+    formData.append('profilePicture', imageFile);
+    
+    // Send request - note: don't set Content-Type header when sending FormData
+    console.log('Uploading profile picture...');
+    const response = await fetch(`${API_BASE_URL}/profile/picture`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+      body: formData,
+    });
+    
+    const data = await handleResponse(response);
+    
+    return {
+      success: true,
+      message: 'Profile picture updated successfully',
+      data: data.data,
+    };
+  } catch (error) {
+    console.error('Profile picture upload error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to upload profile picture',
+    };
+  }
+};
+
 // Route management
 export const getUserRoutes = async (token) => {
   try {
@@ -379,7 +427,8 @@ export const saveRoute = async (token, routeData) => {
     return {
       success: data.success || true,
       message: data.message || 'Route saved successfully',
-      data: data.data || null
+      data: data.data || null,
+      duplicate: data.duplicate || false
     };
   } catch (error) {
     console.error('Save route error:', error);
@@ -440,6 +489,45 @@ export const startSession = async (token, initialLocation) => {
         'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify(initialLocation),
+    });
+    
+    return handleResponse(response);
+  } catch (error) {
+    console.error('Start session error:', error);
+    return {
+      success: false,
+      message: error.message,
+    };
+  }
+};
+
+// Start session with specific activity type
+export const startSessionWithActivityType = async (token, data) => {
+  try {
+    // Check for required fields
+    if (!data.initialLocation) {
+      return {
+        success: false,
+        message: 'Initial location is required',
+      };
+    }
+    
+    // Ensure activityType is one of the valid types
+    const validTypes = ['run', 'jog', 'walk', 'cycling', 'hiking', 'other'];
+    if (!data.activityType || !validTypes.includes(data.activityType)) {
+      // Default to 'run' if not specified or invalid
+      data.activityType = 'run';
+    }
+    
+    console.log(`Starting session with activity type: ${data.activityType}`);
+    
+    const response = await fetch(`${API_BASE_URL}/sessions/start`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(data),
     });
     
     return handleResponse(response);
@@ -528,6 +616,85 @@ export const resetSession = async (token) => {
     return {
       success: false,
       message: error.message,
+    };
+  }
+};
+
+// Activity management functions
+export const getUserActivities = async (token, options = {}) => {
+  try {
+    // Build query params
+    const queryParams = new URLSearchParams();
+    if (options.limit) queryParams.append('limit', options.limit);
+    if (options.skip) queryParams.append('skip', options.skip);
+    if (options.sort) queryParams.append('sort', options.sort);
+    if (options.type) queryParams.append('type', options.type);
+    
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+    console.log('Fetching user activities with options:', options);
+    
+    const response = await fetch(`${API_BASE_URL}/activities${queryString}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const data = await handleResponse(response);
+    console.log('API getUserActivities response:', data);
+    
+    return {
+      success: data.success || false,
+      count: data.count || 0,
+      total: data.total || 0,
+      message: data.message || '',
+      data: data.data || []
+    };
+  } catch (error) {
+    console.error('Get activities error:', error);
+    return {
+      success: false,
+      count: 0,
+      total: 0,
+      message: error.message || 'Failed to fetch activities',
+      data: []
+    };
+  }
+};
+
+export const getActivityById = async (token, activityId) => {
+  if (!activityId) {
+    console.error('Missing activityId in getActivityById');
+    return {
+      success: false,
+      message: 'Activity ID is required',
+      data: null
+    };
+  }
+  
+  try {
+    console.log(`Fetching activity details for ID: ${activityId}`);
+    const response = await fetch(`${API_BASE_URL}/activities/${activityId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const data = await handleResponse(response);
+    console.log('Activity details response:', data);
+    
+    return {
+      success: data.success || false,
+      message: data.message || 'Unknown error',
+      data: data.data || null
+    };
+  } catch (error) {
+    console.error('Get activity error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch activity details',
+      data: null
     };
   }
 };

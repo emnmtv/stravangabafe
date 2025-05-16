@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { getUserProfile, updateUserProfile } from '../services/apiService';
+import React, { useState, useEffect, useRef } from 'react';
+import { getUserProfile, updateUserProfile, uploadProfilePicture } from '../services/apiService';
 
 const ProfilePage = () => {
   const [user, setUser] = useState(null);
@@ -15,6 +15,10 @@ const ProfilePage = () => {
     age: ''
   });
   const [updateSuccess, setUpdateSuccess] = useState(false);
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     fetchUserProfile();
@@ -65,6 +69,64 @@ const ProfilePage = () => {
     }));
   };
 
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setSelectedImage(file);
+      
+      // Create preview URL
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const previewImage = document.getElementById('profilePreview');
+        if (previewImage) {
+          previewImage.src = e.target.result;
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleImageUpload = async () => {
+    if (!selectedImage) return;
+    
+    setUploading(true);
+    setUploadError(null);
+    
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setUploadError('Authentication required');
+        return;
+      }
+      
+      const response = await uploadProfilePicture(token, selectedImage);
+      
+      if (response.success) {
+        // Update user with new profile picture
+        setUser(prev => ({
+          ...prev,
+          profilePicture: response.data.profilePicture
+        }));
+        setSelectedImage(null);
+        
+        // Reset file input
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        
+        setUpdateSuccess(true);
+        setTimeout(() => setUpdateSuccess(false), 3000);
+      } else {
+        setUploadError(response.message || 'Failed to upload profile picture');
+      }
+    } catch (err) {
+      setUploadError('An error occurred while uploading profile picture');
+      console.error(err);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setUpdateSuccess(false);
@@ -113,6 +175,11 @@ const ProfilePage = () => {
         });
         setUpdateSuccess(true);
         setEditMode(false);
+
+        // Also upload the image if one is selected
+        if (selectedImage) {
+          await handleImageUpload();
+        }
       } else {
         setError(response.message || 'Failed to update profile');
       }
@@ -131,6 +198,23 @@ const ProfilePage = () => {
   const getFullName = () => {
     if (!user) return 'User';
     return `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'User';
+  };
+  
+  // Helper function to get profile picture URL
+  const getProfilePictureUrl = () => {
+    if (!user || !user.profilePicture) {
+      return `https://ui-avatars.com/api/?name=${getFullName()}&background=0D8ABC&color=fff`;
+    }
+    
+    // If the profile picture path starts with http, it's already a full URL
+    if (user.profilePicture.startsWith('http')) {
+      return user.profilePicture;
+    }
+    
+    // Otherwise, it's a relative path from the backend
+    // Get the base URL from environment or build up from API URL
+    const serverUrl = "http://192.168.0.106:5000"; // Same domain as API_BASE_URL
+    return `${serverUrl}${user.profilePicture}`;
   };
 
   if (loading) {
@@ -169,14 +253,27 @@ const ProfilePage = () => {
         {!editMode ? (
           <div className="bg-white rounded-lg shadow-md overflow-hidden">
             <div className="p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-semibold text-gray-800">{getFullName()}</h2>
-                <button 
-                  onClick={() => setEditMode(true)}
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
-                >
-                  Edit Profile
-                </button>
+              <div className="flex flex-col md:flex-row md:items-center mb-6">
+                {/* Profile picture */}
+                <div className="mb-4 md:mb-0 md:mr-6">
+                  <div className="w-24 h-24 rounded-full overflow-hidden">
+                    <img 
+                      src={getProfilePictureUrl()}
+                      alt={getFullName()}
+                      className="w-full h-full object-cover" 
+                    />
+                  </div>
+                </div>
+                
+                <div className="flex-1 flex flex-col md:flex-row md:justify-between md:items-center">
+                  <h2 className="text-xl font-semibold text-gray-800 mb-2 md:mb-0">{getFullName()}</h2>
+                  <button 
+                    onClick={() => setEditMode(true)}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                  >
+                    Edit Profile
+                  </button>
+                </div>
               </div>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -248,6 +345,48 @@ const ProfilePage = () => {
         ) : (
           <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-md overflow-hidden">
             <div className="p-6">
+              {/* Profile Picture Section */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Profile Picture
+                </label>
+                <div className="flex items-center">
+                  <div className="w-24 h-24 rounded-full overflow-hidden bg-gray-100 mr-4">
+                    <img 
+                      id="profilePreview"
+                      src={getProfilePictureUrl()}
+                      alt={getFullName()}
+                      className="w-full h-full object-cover" 
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept="image/*"
+                      onChange={handleImageChange}
+                      className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">JPG, PNG or GIF. Max 5MB.</p>
+                    
+                    {uploadError && (
+                      <p className="text-xs text-red-500 mt-1">{uploadError}</p>
+                    )}
+                    
+                    {selectedImage && (
+                      <button
+                        type="button"
+                        onClick={handleImageUpload}
+                        disabled={uploading}
+                        className="mt-2 px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:bg-blue-300"
+                      >
+                        {uploading ? 'Uploading...' : 'Upload Now'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Name

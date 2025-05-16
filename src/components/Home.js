@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { getUserRoutes, generateRoute, saveRoute, startSession, stopSession } from '../services/apiService';
+import { getUserRoutes, generateRoute, saveRoute, startSession, startSessionWithActivityType, stopSession, resetSession } from '../services/apiService';
 import io from 'socket.io-client';
 
 // Calculate distance between two points in kilometers
@@ -315,6 +315,98 @@ function RouteDisplay({ route, currentPosition, isTracking }) {
 // Olongapo City coordinates
 const OLONGAPO_COORDINATES = [14.8386, 120.2842];
 
+// Add this component for route mini maps
+const RouteMiniMap = ({ route }) => {
+  const mapRef = useRef(null);
+  
+  // Calculate bounds
+  const calculateBounds = () => {
+    if (!route || !route.pathCoordinates || route.pathCoordinates.length < 2) {
+      return L.latLngBounds(OLONGAPO_COORDINATES, OLONGAPO_COORDINATES);
+    }
+    return L.latLngBounds(route.pathCoordinates);
+  };
+  
+  useEffect(() => {
+    if (mapRef.current) {
+      const map = mapRef.current;
+      
+      // Properly invalidate size for correct rendering
+      setTimeout(() => {
+        try {
+          map.invalidateSize();
+          
+          // Set bounds
+          const bounds = calculateBounds();
+          map.fitBounds(bounds, { padding: [5, 5] });
+        } catch (e) {
+          console.error("Error setting mini map bounds:", e);
+        }
+      }, 100);
+    }
+  }, [route]);
+  
+  if (!route || !route.pathCoordinates || route.pathCoordinates.length < 2) {
+    return <div className="h-28 w-full bg-gray-100 rounded flex items-center justify-center text-gray-400 text-xs">No path data</div>;
+  }
+  
+  return (
+    <div className="h-28 w-full rounded overflow-hidden">
+      <MapContainer
+        bounds={calculateBounds()}
+        ref={mapRef}
+        style={{ height: '100%', width: '100%' }}
+        zoomControl={false}
+        attributionControl={false}
+        dragging={false}
+        touchZoom={false}
+        doubleClickZoom={false}
+        scrollWheelZoom={false}
+        boxZoom={false}
+        keyboard={false}
+        minZoom={10}
+        maxZoom={18}
+      >
+        <TileLayer
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        />
+        
+        <Polyline 
+          positions={route.pathCoordinates}
+          color="#4CAF50"
+          weight={4}
+          opacity={0.9}
+          lineCap="round"
+          lineJoin="round"
+        />
+        
+        {/* Start marker */}
+        <Marker 
+          position={route.startPoint} 
+          icon={new L.DivIcon({
+            className: 'custom-div-icon',
+            html: `<div style="background-color: #4CAF50; width: 8px; height: 8px; border-radius: 50%; border: 2px solid white;"></div>`,
+            iconSize: [8, 8],
+            iconAnchor: [4, 4]
+          })}
+        />
+        
+        {/* End marker */}
+        <Marker 
+          position={route.endPoint} 
+          icon={new L.DivIcon({
+            className: 'custom-div-icon',
+            html: `<div style="background-color: #F44336; width: 8px; height: 8px; border-radius: 50%; border: 2px solid white;"></div>`,
+            iconSize: [8, 8],
+            iconAnchor: [4, 4]
+          })}
+        />
+      </MapContainer>
+    </div>
+  );
+};
+
 function Home() {
   const [currentPosition, setCurrentPosition] = useState(OLONGAPO_COORDINATES);
   const [userRoutes, setUserRoutes] = useState([]);
@@ -324,8 +416,11 @@ function Home() {
   const [mapRef, setMapRef] = useState(null);
   const [mapKey, setMapKey] = useState(Date.now()); // For forcing map re-renders
   
-  // Live location tracking
-  const [isLiveTracking, setIsLiveTracking] = useState(false);
+  // Add activity type state
+  const [activityType, setActivityType] = useState('run');
+  
+  // Remove isLiveTracking as tracking is now integrated
+  // [isLiveTracking removed]
   const [trackingPath, setTrackingPath] = useState([]);
   const locationWatchId = useRef(null);
   const socketRef = useRef(null);
@@ -615,7 +710,7 @@ function Home() {
   // Function to update user's current location
   // eslint-disable-next-line no-unused-vars
   const updateCurrentLocation = () => {
-    if (navigator.geolocation && !isLiveTracking) {
+    if (navigator.geolocation && !isTracking) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const newPosition = [
@@ -642,22 +737,32 @@ function Home() {
 
   // Set up periodic location updates when not actively tracking
   useEffect(() => {
-    // Only set up periodic updates when not in live tracking mode
-    if (!isLiveTracking && !locationUpdateTimerRef.current) {
+    // Only set up periodic updates when not in tracking mode
+    if (!isTracking && !locationUpdateTimerRef.current) {
       // Update location every 15 seconds
       locationUpdateTimerRef.current = setInterval(() => {
         updateCurrentLocation();
+        
+        // Also update the server with our current location if connected
+        if (socketRef.current && socketRef.current.connected) {
+          socketRef.current.emit('update_location', {
+            userId: localStorage.getItem('userId'),
+            position: currentPosition,
+            timestamp: Date.now()
+          });
+        }
       }, 15000);
     }
     
-    // Clean up interval when component unmounts or when live tracking starts
+    // Clean up interval when component unmounts or when tracking starts
     return () => {
       if (locationUpdateTimerRef.current) {
         clearInterval(locationUpdateTimerRef.current);
         locationUpdateTimerRef.current = null;
       }
     };
-  }, [isLiveTracking]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTracking, currentPosition]);
 
   // Get user's current location
   useEffect(() => {
@@ -690,6 +795,15 @@ function Home() {
                 console.error('Error focusing map on user location:', e);
               }
             }, 500);
+          }
+          
+          // Send initial location to server (doesn't start tracking yet)
+          if (socketRef.current && socketRef.current.connected) {
+            socketRef.current.emit('update_location', {
+              userId: localStorage.getItem('userId'),
+              position: userLocation,
+              timestamp: Date.now()
+            });
           }
         },
         (err) => {
@@ -828,6 +942,9 @@ function Home() {
             endPoint
           };
         });
+        
+        // Log completed routes for debugging
+        console.log('Completed routes:', processedRoutes.filter(r => r.completed).length, 'of', processedRoutes.length);
         
         setUserRoutes(processedRoutes);
         
@@ -1107,6 +1224,15 @@ function Home() {
           locationWatchId.current = null;
         }
         
+        // Disconnect socket if connected
+        if (socketRef.current) {
+          socketRef.current.emit('end_tracking', { 
+            userId: localStorage.getItem('userId'),
+            finalPath: trackingPath,
+            stats: trackingStats
+          });
+        }
+        
         // Reset tracking state
         setIsTracking(false);
         
@@ -1139,12 +1265,6 @@ function Home() {
                 // Ensure we have a valid distance (at least 0.01)
                 const routeDistance = Math.max(0.01, trackingData.distance);
                 
-                // Make sure we have enough points in the path (at least 3)
-                if (trackingData.path.length < 3) {
-                  alert('Error: Not enough tracking points to save a route. Keep moving to create a valid route.');
-                  return;
-                }
-                
                 // Get start, mid, and end points to ensure at least 3 points in path
                 const firstPoint = trackingData.path[0];
                 const lastPoint = trackingData.path[trackingData.path.length - 1];
@@ -1156,7 +1276,7 @@ function Home() {
                   return;
                 }
                 
-                // Create a simplified path if too many points (to avoid payload size issues)
+                // Create a simplified path if too many points
                 let pathToUse = trackingData.path;
                 if (trackingData.path.length > 100) {
                   // Simplify by taking every nth point to keep under 100 points
@@ -1169,9 +1289,7 @@ function Home() {
                 }
                 
                 // Format path coordinates correctly for GeoJSON
-                // GeoJSON requires [longitude, latitude] format
                 const pathCoordinates = pathToUse.map(point => {
-                  // Ensure point is valid
                   if (!Array.isArray(point) || point.length < 2 || 
                       isNaN(point[0]) || isNaN(point[1])) {
                     console.warn('Skipping invalid point:', point);
@@ -1191,15 +1309,13 @@ function Home() {
                 // Create route data with all required fields
                 const routeData = {
                   title: routeTitle,
-                  description: `Route tracked on ${new Date().toLocaleDateString()}`,
+                  description: `Route completed on ${new Date().toLocaleDateString()}`,
                   distance: routeDistance,
                   elevationGain: 0,
-                  // Create path as object (API will handle it properly now)
                   path: {
                     type: 'LineString',
                     coordinates: pathCoordinates
                   },
-                  // Create start and end points as objects
                   startPoint: {
                     type: 'Point',
                     coordinates: [firstPoint[1], firstPoint[0]]
@@ -1246,18 +1362,18 @@ function Home() {
                 console.error('Error preparing route data:', error);
                 alert('Error preparing route data: ' + error.message);
               }
-        }
-        
-        // Reset tracking stats
-        setTrackingStats({
-          distance: 0,
-          duration: 0,
-          speed: 0,
-          startTime: null
-        });
-        setElapsedTime('00:00:00');
+            }
+            
+            // Reset tracking stats after saving (or not saving)
+            setTrackingStats({
+              distance: 0,
+              duration: 0,
+              speed: 0,
+              startTime: null
+            });
+            setElapsedTime('00:00:00');
             setTrackingPath([]);
-          }, 500); // Small delay to ensure UI updates first
+          }, 500);
         } else {
           alert('Not enough tracking data to save. You need to move more to create a valid route.');
           
@@ -1269,7 +1385,7 @@ function Home() {
             startTime: null
           });
           setElapsedTime('00:00:00');
-        setTrackingPath([]);
+          setTrackingPath([]);
         }
       }
     } else {
@@ -1339,6 +1455,12 @@ function Home() {
           currentSimulationStepRef.current = 0;
           
           console.log("Cleared simulation state before starting real tracking");
+        }
+        
+        // Initialize websocket connection
+        if (!socketRef.current) {
+          console.log('Initializing socket connection for route tracking');
+          initializeSocket();
         }
         
         // Start watching position for tracking with a higher timeout
@@ -1427,6 +1549,38 @@ function Home() {
                 locationWatchId.current = null;
               }
               
+              // Tell the server we're starting tracking via socket
+              if (socketRef.current) {
+                socketRef.current.emit('start_tracking', {
+                  userId: localStorage.getItem('userId'),
+                  initialPosition: initialPos,
+                  route: selectedRoute._id,
+                  timestamp: now,
+                  activityType: activityType // Include activity type in socket data
+                });
+              }
+              
+              // Start session with activity type
+              const token = localStorage.getItem('token');
+              if (token) {
+                startSessionWithActivityType(token, {
+                  initialLocation: {
+                    coordinates: [initialPos[1], initialPos[0]] // Convert to [lng, lat] for GeoJSON
+                  },
+                  activityType: activityType // Include selected activity type
+                })
+                .then(response => {
+                  if (response.success) {
+                    console.log(`Successfully started ${activityType} session`);
+                  } else {
+                    console.error('Error starting session:', response.message);
+                  }
+                })
+                .catch(err => {
+                  console.error('Error starting tracking session:', err);
+                });
+              }
+              
               // Start location watching with increased timeout
             locationWatchId.current = navigator.geolocation.watchPosition(
               (pos) => {
@@ -1445,13 +1599,27 @@ function Home() {
                     const incrementalDistance = calculateDistance(lastPos, newPos);
                     
                     // Update tracking stats with new distance
-                    setTrackingStats(prev => ({
-                      ...prev,
-                      distance: prev.distance + incrementalDistance,
+                      const updatedStats = {
+                        ...trackingStatsRef.current,
+                        distance: trackingStatsRef.current.distance + incrementalDistance,
                       // Update speed (km/h) based on distance and time
-                      speed: prev.startTime ? 
-                        ((prev.distance + incrementalDistance) / ((Date.now() - prev.startTime) / 3600000)).toFixed(1) : 0
-                    }));
+                        speed: trackingStatsRef.current.startTime ? 
+                          ((trackingStatsRef.current.distance + incrementalDistance) / ((Date.now() - trackingStatsRef.current.startTime) / 3600000)).toFixed(1) : 0
+                      };
+                      
+                      // Update both the ref (immediately) and state (might be delayed)
+                      trackingStatsRef.current = updatedStats;
+                      setTrackingStats(updatedStats);
+                      
+                      // Emit location update to server via socket
+                      if (socketRef.current && socketRef.current.connected) {
+                        socketRef.current.emit('location_update', {
+                          userId: localStorage.getItem('userId'),
+                          position: newPos,
+                          timestamp: Date.now(),
+                          stats: updatedStats
+                        });
+                      }
                   }
                   
                   return newPath;
@@ -1495,12 +1663,26 @@ function Home() {
                               if (prevPath.length > 0) {
                                 const lastPos = prevPath[prevPath.length - 1];
                                 const incrementalDistance = calculateDistance(lastPos, newPos);
-                                setTrackingStats(prev => ({
-                                  ...prev,
-                                  distance: prev.distance + incrementalDistance,
-                                  speed: prev.startTime ? 
-                                    ((prev.distance + incrementalDistance) / ((Date.now() - prev.startTime) / 3600000)).toFixed(1) : 0
-                                }));
+                                const updatedStats = {
+                                  ...trackingStatsRef.current,
+                                  distance: trackingStatsRef.current.distance + incrementalDistance,
+                                  speed: trackingStatsRef.current.startTime ? 
+                                    ((trackingStatsRef.current.distance + incrementalDistance) / ((Date.now() - trackingStatsRef.current.startTime) / 3600000)).toFixed(1) : 0
+                                };
+                                
+                                // Update both ref and state
+                                trackingStatsRef.current = updatedStats;
+                                setTrackingStats(updatedStats);
+                                
+                                // Send update to server
+                                if (socketRef.current && socketRef.current.connected) {
+                                  socketRef.current.emit('location_update', {
+                                    userId: localStorage.getItem('userId'),
+                                    position: newPos,
+                                    timestamp: Date.now(),
+                                    stats: updatedStats
+                                  });
+                                }
                               }
                               return newPath;
                             });
@@ -1597,6 +1779,21 @@ function Home() {
       const duration = trackingData.duration || 60; // Minimum 1 minute
       const timePerPoint = duration * 1000 / pathToUse.length;
       
+      // Ensure distance is valid - calculate if not provided or zero
+      let distance = trackingData.distance;
+      if (!distance || distance <= 0) {
+        console.log("Recalculating distance for activity");
+        distance = calculateRouteDistance(pathToUse);
+        
+        // Ensure minimum distance
+        if (distance < 0.001) {
+          console.log("Setting minimum distance value");
+          distance = 0.001; // Minimum value to pass validation
+        }
+      }
+      
+      console.log("Activity distance:", distance);
+      
       // Format location history for the API with proper timestamps and coordinates
       const locationHistory = pathToUse.map((point, index) => ({
         timestamp: new Date(startTime + (index * timePerPoint)),
@@ -1607,11 +1804,11 @@ function Home() {
       console.log("Starting session with initial location:", [pathToUse[0][1], pathToUse[0][0]]);
       
       // First start a session (required by the API flow)
-      const startResponse = await startSession(token, {
+      const startResponse = await startSessionWithActivityType(token, {
         initialLocation: {
           coordinates: [pathToUse[0][1], pathToUse[0][0]] // First point [lng, lat]
         },
-        activityType: 'run'
+        activityType: activityType // Use selected activity type
       });
       
       if (!startResponse.success) {
@@ -1626,7 +1823,7 @@ function Home() {
       const lastPoint = pathToUse[pathToUse.length - 1];
       
       // Calculate speed stats
-      const avgSpeed = trackingData.speed || (trackingData.distance / (duration / 3600));
+      const avgSpeed = trackingData.speed || (distance / (duration / 3600));
       const maxSpeed = parseFloat(avgSpeed) * 1.2 || 10; // Estimate max speed as 20% higher than average
       
       // Immediately stop the session to create the activity
@@ -1642,10 +1839,10 @@ function Home() {
           },
           speed: item.speed
         })),
-        totalDistance: trackingData.distance,
+        totalDistance: distance,
         totalDuration: duration,
         title: activityTitle,
-        activityType: 'run',
+        activityType: activityType, // Use selected activity type
         // Convert the route for the API
         route: {
           type: 'LineString',
@@ -1783,6 +1980,9 @@ function Home() {
     const routeName = prompt('Enter a name for this route:', selectedRoute.title || 'My Route');
     if (!routeName) return; // User cancelled
     
+    // Ask if the route is completed
+    const isCompleted = window.confirm('Is this a route you have already completed?');
+    
     try {
       // Prepare route data for saving
       const routeData = {
@@ -1802,13 +2002,18 @@ function Home() {
         endPoint: {
           type: 'Point',
           coordinates: [selectedRoute.endPoint[1], selectedRoute.endPoint[0]]
-        }
+        },
+        completed: isCompleted
       };
       
       const result = await saveRoute(token, routeData);
       
       if (result.success) {
+        if (result.duplicate) {
+          alert('This route has already been saved as completed!');
+        } else {
         alert('Route saved successfully!');
+        }
         // Refresh routes list
         fetchRoutes();
       } else {
@@ -1829,13 +2034,25 @@ function Home() {
       const point1 = coordinates[i-1];
       const point2 = coordinates[i];
       
+      // Ensure we have valid coordinates
+      if (!point1 || !point2 || point1.length < 2 || point2.length < 2) {
+        console.error('Invalid coordinate pair:', point1, point2);
+        continue;
+      }
+      
+      // Extract lat/lng correctly - coordinates are in [lat, lng] format in this context
+      const lat1 = point1[0];
+      const lng1 = point1[1];
+      const lat2 = point2[0];
+      const lng2 = point2[1];
+      
       // Haversine formula for distance
       const R = 6371; // Earth radius in km
-      const dLat = (point2[0] - point1[0]) * Math.PI / 180;
-      const dLon = (point2[1] - point1[1]) * Math.PI / 180;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lng2 - lng1) * Math.PI / 180;
       const a = 
         Math.sin(dLat/2) * Math.sin(dLat/2) +
-        Math.cos(point1[0] * Math.PI / 180) * Math.cos(point2[0] * Math.PI / 180) * 
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
         Math.sin(dLon/2) * Math.sin(dLon/2);
       const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
       const distance = R * c;
@@ -1843,6 +2060,7 @@ function Home() {
       total += distance;
     }
     
+    console.log(`Calculated route distance: ${total.toFixed(3)} km from ${coordinates.length} points`);
     return total;
   };
 
@@ -1955,6 +2173,16 @@ function Home() {
     const serverUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
     console.log('Connecting to socket server at:', serverUrl);
     
+    // Clear any existing socket
+    if (socketRef.current) {
+      try {
+        socketRef.current.disconnect();
+      } catch (e) {
+        console.error('Error disconnecting socket:', e);
+      }
+    }
+    
+    // Create new socket connection
     const socket = io(serverUrl, {
       path: '/socket.io',
       transports: ['websocket', 'polling'],
@@ -1968,6 +2196,16 @@ function Home() {
 
     socket.on('connect', () => {
       console.log('Socket connected successfully with ID:', socket.id);
+      
+      // Send initial presence so server knows we're online
+      const userId = localStorage.getItem('userId');
+      if (userId) {
+        socket.emit('user_online', {
+          userId,
+          timestamp: Date.now(),
+          position: currentPosition
+        });
+      }
     });
 
     socket.on('connection_confirmed', (data) => {
@@ -1976,18 +2214,28 @@ function Home() {
 
     socket.on('connect_error', (error) => {
       console.error('Socket connection error:', error);
-      // Show a user-friendly message
-      alert('Live tracking not available right now. Please try again later.');
+      // Don't show alert, just log the error as user is not explicitly requesting tracking
+      console.log('WebSocket connection not available, tracking will use local data only');
     });
 
     socket.on('tracking_started', (data) => {
       console.log('Server acknowledged tracking start:', data);
       if (data.success && data.timestamp) {
         // Update start time to match server's timestamp
+        const serverStartTime = new Date(data.timestamp).getTime();
         setTrackingStats(prev => ({
           ...prev,
-          startTime: new Date(data.timestamp).getTime()
+          startTime: serverStartTime,
+          lastSyncTime: Date.now(),
+          serverTimeSync: Date.now() - serverStartTime
         }));
+        
+        trackingStatsRef.current = {
+          ...trackingStatsRef.current,
+          startTime: serverStartTime,
+          lastSyncTime: Date.now(),
+          serverTimeSync: Date.now() - serverStartTime
+        };
       }
     });
 
@@ -1995,11 +2243,23 @@ function Home() {
       // Update based on server's elapsed time to keep in sync
       if (data.elapsedMs && data.startTime) {
         console.log('Time sync from server:', data);
+        
+        const serverStartTime = new Date(data.startTime).getTime();
+        
+        // Update both state and ref for consistency
         setTrackingStats(prev => ({
           ...prev,
           serverTimeSync: data.elapsedMs,
-          startTime: new Date(data.startTime).getTime()
+          startTime: serverStartTime,
+          lastSyncTime: Date.now()
         }));
+        
+        trackingStatsRef.current = {
+          ...trackingStatsRef.current,
+          serverTimeSync: data.elapsedMs,
+          startTime: serverStartTime,
+          lastSyncTime: Date.now()
+        };
         
         // Update timer display
         const seconds = Math.floor(data.elapsedMs / 1000);
@@ -2018,12 +2278,20 @@ function Home() {
         if (typeof distance === 'number' && typeof duration === 'number') {
           console.log(`Updating stats from server: ${distance.toFixed(2)}km in ${formatTime(Math.floor(duration))}`);
           
+          // Update both state and ref for consistency
           setTrackingStats(prev => ({
             ...prev,
             distance: distance,
             duration: duration,
             speed: speed || prev.speed
           }));
+          
+          trackingStatsRef.current = {
+            ...trackingStatsRef.current,
+            distance: distance,
+            duration: duration,
+            speed: speed || trackingStatsRef.current.speed
+          };
           
           // Update timer display from server elapsed time if available
           if (elapsedMs) {
@@ -2041,7 +2309,46 @@ function Home() {
 
     socket.on('tracking_error', (error) => {
       console.error('Tracking error from server:', error);
-      alert(`Tracking error: ${error.message}`);
+      // Don't show alert to avoid disrupting the user
+      console.error(`Tracking error: ${error.message}`);
+    });
+    
+    // Listen for nearby users (social features)
+    socket.on('nearby_users', (data) => {
+      console.log('Received nearby users update:', data);
+      // Could display these on the map if desired
+    });
+    
+    // Listen for route progress updates from server
+    socket.on('route_progress', (data) => {
+      if (data && data.progress && isTracking) {
+        console.log('Server calculated route progress:', data.progress);
+        // You could update UI to show route completion percentage
+      }
+    });
+    
+    // Add socket reconnect handling to improve robustness
+    socket.on('reconnect', (attemptNumber) => {
+      console.log(`Socket reconnected after ${attemptNumber} attempts`);
+      
+      // If we're currently tracking, notify the server to re-sync data
+      if (isTracking) {
+        socket.emit('re_sync_tracking', {
+          userId: localStorage.getItem('userId'),
+          position: currentPosition,
+          timestamp: Date.now(),
+          stats: trackingStatsRef.current,
+          route: selectedRoute?._id,
+          trackingPath: trackingPath
+        });
+      } else {
+        // Otherwise just send current location
+        socket.emit('user_online', {
+          userId: localStorage.getItem('userId'),
+          timestamp: Date.now(),
+          position: currentPosition
+        });
+      }
     });
 
     socketRef.current = socket;
@@ -2050,9 +2357,57 @@ function Home() {
 
   // Cleanup socket connection
   useEffect(() => {
+    // Initialize websocket connection on component mount
+    if (!socketRef.current) {
+      initializeSocket();
+    }
+    
     return () => {
+      // Clean up socket connection when component unmounts
       if (socketRef.current) {
+        try {
+          // Notify server that user is going offline
+          socketRef.current.emit('user_offline', {
+            userId: localStorage.getItem('userId'),
+            timestamp: Date.now()
+          });
+          
+          if (isTracking) {
+            // Let server know we're ending tracking before disconnecting
+            socketRef.current.emit('end_tracking', { 
+              userId: localStorage.getItem('userId'),
+              finalPath: trackingPath,
+              stats: trackingStatsRef.current
+            });
+          }
+          
+          // Properly disconnect
         socketRef.current.disconnect();
+        } catch (e) {
+          console.error('Error disconnecting socket:', e);
+        }
+        socketRef.current = null;
+      }
+      
+      // Clean up location watching
+      if (locationWatchId.current !== null) {
+        try {
+          navigator.geolocation.clearWatch(locationWatchId.current);
+        } catch (e) {
+          console.error("Error clearing location watch:", e);
+        }
+        locationWatchId.current = null;
+      }
+      
+      // Clean up timers
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      
+      if (locationUpdateTimerRef.current) {
+        clearInterval(locationUpdateTimerRef.current);
+        locationUpdateTimerRef.current = null;
       }
       
       // Clean up simulation interval if it exists
@@ -2061,6 +2416,7 @@ function Home() {
         simulationIntervalRef.current = null;
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Format time for display (HH:MM:SS)
@@ -2137,281 +2493,6 @@ function Home() {
     
     // Then update React state (this may be delayed)
     setTrackingStats(updatedStats);
-  };
-
-  // Start/stop live location tracking
-  const toggleLiveTracking = () => {
-    if (isLiveTracking) {
-      // Stop tracking
-      if (locationWatchId.current !== null) {
-        navigator.geolocation.clearWatch(locationWatchId.current);
-        locationWatchId.current = null;
-      }
-      
-      // Stop timer
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      
-      // Ask if user wants to save the tracked path
-      if (trackingPath.length > 2) {
-        if (window.confirm('Do you want to save this tracked route?')) {
-          try {
-            // Create a title with timestamp to ensure uniqueness
-            const routeTitle = `Live Route ${new Date().toLocaleTimeString()} - ${trackingStats.distance.toFixed(2)}km`;
-            
-            // Ensure we have a valid distance (at least 0.01)
-            const routeDistance = Math.max(0.01, trackingStats.distance);
-            
-            // Make sure we have enough points in the path (at least 3)
-            if (trackingPath.length < 3) {
-              alert('Error: Not enough tracking points to save a route. Keep moving to create a valid route.');
-              return;
-            }
-            
-            // Get start, mid, and end points to ensure at least 3 points in path
-            const firstPoint = trackingPath[0];
-            const midPoint = trackingPath[Math.floor(trackingPath.length / 2)];
-            const lastPoint = trackingPath[trackingPath.length - 1];
-            
-            // Validate that points have valid coordinates
-            if (!Array.isArray(firstPoint) || firstPoint.length < 2 || 
-                !Array.isArray(midPoint) || midPoint.length < 2 ||
-                !Array.isArray(lastPoint) || lastPoint.length < 2) {
-              alert('Error: Invalid coordinates in tracking data');
-              return;
-            }
-            
-            // Create a simplified path if too many points (to avoid payload size issues)
-            let pathToUse = trackingPath;
-            if (trackingPath.length > 100) {
-              // Simplify by taking every nth point to keep under 100 points
-              const step = Math.ceil(trackingPath.length / 100);
-              pathToUse = trackingPath.filter((_, index) => index % step === 0 || index === trackingPath.length - 1);
-              
-              // Always ensure we keep first, mid and last point
-              if (!pathToUse.includes(firstPoint)) pathToUse.unshift(firstPoint);
-              if (!pathToUse.includes(lastPoint)) pathToUse.push(lastPoint);
-            }
-            
-            // Format path coordinates correctly for GeoJSON
-            // GeoJSON requires [longitude, latitude] format
-            const pathCoordinates = pathToUse.map(point => {
-              // Ensure point is valid
-              if (!Array.isArray(point) || point.length < 2 || 
-                  isNaN(point[0]) || isNaN(point[1])) {
-                console.warn('Skipping invalid point:', point);
-                return null;
-              }
-              
-              // Convert from [latitude, longitude] to [longitude, latitude]
-              return [point[1], point[0]];
-            }).filter(point => point !== null);
-            
-            // Ensure we still have enough valid points after filtering
-            if (pathCoordinates.length < 3) {
-              alert('Error: Not enough valid coordinates in path. Need at least 3 points.');
-              return;
-            }
-            
-            // Ensure the first and last points are included
-            const firstCoord = [firstPoint[1], firstPoint[0]];
-            const lastCoord = [lastPoint[1], lastPoint[0]];
-            
-            // Create route data with all required fields
-            const routeData = {
-              title: routeTitle,
-              description: `Route tracked on ${new Date().toLocaleDateString()}`,
-              distance: routeDistance,
-              elevationGain: 0,
-              // Create path as object (API will handle it properly now)
-              path: {
-                type: 'LineString',
-                coordinates: pathCoordinates
-              },
-              // Create start and end points as objects
-              startPoint: {
-                type: 'Point',
-                coordinates: firstCoord
-              },
-              endPoint: {
-                type: 'Point',
-                coordinates: lastCoord
-              }
-            };
-            
-            // Get token and save the route
-            const token = localStorage.getItem('token');
-            if (!token) {
-              alert('Error: You must be logged in to save routes');
-              return;
-            }
-            
-            saveRoute(token, routeData)
-              .then(result => {
-                if (result.success) {
-                  alert('Route saved successfully!');
-                  fetchRoutes();
-                } else {
-                  alert('Failed to save route: ' + (result.message || 'Unknown server error'));
-                  console.error('Route save failed:', result);
-                }
-              })
-              .catch(err => {
-                console.error('Error saving route:', err);
-                alert('Error saving route: ' + (err.message || 'Unknown error occurred'));
-              });
-          } catch (error) {
-            console.error('Error preparing route data:', error);
-            alert('Error preparing route data: ' + error.message);
-          }
-        }
-      } else {
-        alert('Not enough tracking points to save a route. Move around more to create a valid path.');
-      }
-      
-      // Disconnect socket if needed
-      if (socketRef.current) {
-        socketRef.current.emit('end_tracking', { 
-          userId: localStorage.getItem('userId'),
-          finalPath: trackingPath,
-          stats: trackingStats
-        });
-      }
-      
-      setTrackingPath([]);
-      setIsLiveTracking(false);
-      setTrackingStats({
-        distance: 0,
-        duration: 0,
-        speed: 0,
-        startTime: null
-      });
-      setElapsedTime('00:00:00');
-      
-    } else {
-      // Start tracking
-      if (!socketRef.current) {
-        initializeSocket();
-      }
-      
-      // Get initial position
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const initialPos = [position.coords.latitude, position.coords.longitude];
-          const startTime = Date.now();
-          
-          setCurrentPosition(initialPos);
-          setTrackingPath([initialPos]);
-          
-          // Reset timer and stats with current time
-          setTrackingStats({
-            distance: 0,
-            duration: 0, 
-            speed: 0,
-            startTime: startTime,
-            lastSyncTime: startTime
-          });
-          
-          // Force immediate timer update
-          const startSeconds = 0;
-          setElapsedTime(formatTime(startSeconds));
-          
-          // Start timer immediately, using a shorter interval initially
-          // to ensure the UI updates quickly
-          clearInterval(timerRef.current); // Clear any existing timer
-          
-          // Start with quick updates for the first few seconds
-          timerRef.current = setInterval(() => {
-            const elapsed = Math.floor((Date.now() - startTime) / 1000);
-            setElapsedTime(formatTime(elapsed));
-            
-            // Update duration in tracking stats
-            setTrackingStats(prev => ({
-              ...prev,
-              duration: elapsed
-            }));
-            
-            // Switch to normal interval after 3 seconds
-            if (elapsed >= 3) {
-              clearInterval(timerRef.current);
-              timerRef.current = setInterval(updateTimer, 1000);
-            }
-          }, 100); // Quick updates every 100ms initially
-          
-          // After the initial rapid updates, switch to normal interval
-          setTimeout(() => {
-            if (timerRef.current) {
-              clearInterval(timerRef.current);
-              timerRef.current = setInterval(updateTimer, 1000);
-            }
-          }, 3000);
-          
-          // Start location watching
-          locationWatchId.current = navigator.geolocation.watchPosition(
-            (pos) => {
-              const newPos = [pos.coords.latitude, pos.coords.longitude];
-              
-              setTrackingPath(prevPath => {
-                const newPath = [...prevPath, newPos];
-                
-                // Calculate incremental distance
-                if (prevPath.length > 0) {
-                  const lastPos = prevPath[prevPath.length - 1];
-                  const incrementalDistance = calculateDistance(lastPos, newPos);
-                  
-                  setTrackingStats(prev => ({
-                    ...prev,
-                    distance: prev.distance + incrementalDistance
-                  }));
-                  
-                  // Send location update to server
-                  if (socketRef.current) {
-                    socketRef.current.emit('location_update', {
-                      userId: localStorage.getItem('userId'),
-                      position: newPos,
-                      timestamp: Date.now(),
-                      stats: {
-                        ...trackingStats,
-                        distance: trackingStats.distance + incrementalDistance
-                      }
-                    });
-                  }
-                }
-                
-                return newPath;
-              });
-              
-              setCurrentPosition(newPos);
-              
-              // Center map on new position if tracking
-              if (mapRef) {
-                mapRef.setView(newPos, mapRef.getZoom());
-              }
-            },
-            (err) => {
-              console.error('Error watching position:', err);
-              alert('Error tracking position: ' + err.message);
-              setIsLiveTracking(false);
-            },
-            { 
-              enableHighAccuracy: true,
-              maximumAge: 0,
-              timeout: 5000
-            }
-          );
-          
-          // Set tracking state first, so UI updates immediately
-          setIsTracking(true);
-        },
-        (err) => {
-          console.error('Error getting initial position:', err);
-          alert('Error accessing location: ' + err.message);
-        },
-        { enableHighAccuracy: true }
-      );
-    }
   };
 
   // Toggle simulation state
@@ -3032,8 +3113,21 @@ function Home() {
         return;
       }
       
-      // Get distance from tracking stats or route
-      const finalDistance = Math.max(0.01, trackingStatsRef.current.distance || calculateRouteDistance(pathToUse));
+      // Get distance from tracking stats or calculate it from coordinates
+      let finalDistance = trackingStatsRef.current.distance;
+      
+      // If distance is missing or invalid, calculate it
+      if (!finalDistance || finalDistance <= 0) {
+        console.log("Recalculating distance for simulated activity");
+        finalDistance = calculateRouteDistance(pathToUse);
+        
+        // Log the calculated distance
+        console.log("Calculated distance:", finalDistance);
+      }
+      
+      // Ensure minimum valid distance
+      finalDistance = Math.max(0.001, finalDistance);
+      console.log("Final distance for activity:", finalDistance);
       
       // Get duration from tracking stats
       const duration = trackingStatsRef.current.duration || 60; // Minimum 1 minute
@@ -3052,11 +3146,11 @@ function Home() {
       console.log("Starting session with initial location:", [pathToUse[0][1], pathToUse[0][0]]);
       
       // First start a session (required by the API flow)
-      const startResponse = await startSession(token, {
+      const startResponse = await startSessionWithActivityType(token, {
         initialLocation: {
           coordinates: [pathToUse[0][1], pathToUse[0][0]] // First point [lng, lat]
         },
-        activityType: 'run'
+        activityType: activityType // Use selected activity type
       });
       
       if (!startResponse.success) {
@@ -3069,6 +3163,9 @@ function Home() {
       
       // Extract the last point for final location
       const lastPoint = pathToUse[pathToUse.length - 1];
+      
+      // Calculate speed based on distance and duration
+      const avgSpeed = parseFloat(trackingStatsRef.current.speed) || (finalDistance / (duration / 3600));
       
       // Immediately stop the session to create the activity
       const stopResponse = await stopSession(token, {
@@ -3086,14 +3183,14 @@ function Home() {
         totalDistance: finalDistance,
         totalDuration: duration,
         title: activityTitle,
-        activityType: 'run',
+        activityType: activityType, // Use selected activity type
         // Convert the route for the API
         route: {
           type: 'LineString',
           coordinates: pathToUse.map(point => [point[1], point[0]])
         },
-        averageSpeed: parseFloat(trackingStatsRef.current.speed) || (finalDistance / (duration / 3600)),
-        maxSpeed: parseFloat(trackingStatsRef.current.speed) * 1.2 || 10
+        averageSpeed: avgSpeed,
+        maxSpeed: parseFloat(avgSpeed) * 1.2 || 10
       });
       
       if (stopResponse.success) {
@@ -3109,6 +3206,76 @@ function Home() {
       console.error('Error saving activity:', error);
       alert('Error saving activity: ' + error.message);
     }
+  };
+
+  // Add a function to handle resetting the session
+  const handleResetSession = async () => {
+    if (window.confirm('Are you sure you want to reset the current session? This will clear any ongoing tracking data.')) {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) {
+          alert('You must be logged in to reset a session');
+          return;
+        }
+        
+        // Stop tracking if currently tracking
+        if (isTracking) {
+          // Clear tracking timers
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          
+          // Stop location watching safely
+          if (locationWatchId.current !== null) {
+            try {
+              navigator.geolocation.clearWatch(locationWatchId.current);
+            } catch (e) {
+              console.error("Error clearing location watch:", e);
+            }
+            locationWatchId.current = null;
+          }
+          
+          setIsTracking(false);
+        }
+        
+        // Call the API to reset the session
+        const result = await resetSession(token);
+        
+        if (result.success) {
+          alert('Session reset successfully');
+          
+          // Reset tracking stats
+          setTrackingStats({
+            distance: 0,
+            duration: 0,
+            speed: 0,
+            startTime: null
+          });
+          setElapsedTime('00:00:00');
+          setTrackingPath([]);
+          
+          // Reset tracking refs
+          trackingStatsRef.current = {
+            distance: 0,
+            duration: 0,
+            speed: 0,
+            startTime: null,
+            lastSyncTime: null
+          };
+        } else {
+          alert('Failed to reset session: ' + result.message);
+        }
+      } catch (error) {
+        console.error('Error resetting session:', error);
+        alert('Error resetting session: ' + error.message);
+      }
+    }
+  };
+
+  // Add this function to handle activity type change
+  const handleActivityTypeChange = (e) => {
+    setActivityType(e.target.value);
   };
 
   if (loading && !currentPosition) {
@@ -3290,7 +3457,7 @@ function Home() {
           </Marker>
           
           {/* Live tracking path */}
-          {isLiveTracking && trackingPath.length > 1 && (
+          {isTracking && trackingPath.length > 1 && (
             <Polyline 
               positions={trackingPath}
               color="#F59E0B"
@@ -3389,17 +3556,6 @@ function Home() {
           >
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 md:w-6 md:h-6">
               <path fillRule="evenodd" d="M16.5 4.478v.227a48.816 48.816 0 013.878.512.75.75 0 11-.256 1.478l-.209-.035-1.005 13.07a3 3 0 01-2.991 2.77H8.084a3 3 0 01-2.991-2.77L4.087 6.66l-.209.035a.75.75 0 01-.256-1.478A48.567 48.567 0 017.5 4.705v-.227c0-1.564 1.213-2.9 2.816-2.951a52.662 52.662 0 013.369 0c1.603.051 2.815 1.387 2.815 2.951zm-6.136-1.452a51.196 51.196 0 013.273 0C14.39 3.05 15 3.684 15 4.478v.113a49.488 49.488 0 00-6 0v-.113c0-.794.609-1.428 1.364-1.452zm-.355 5.945a.75.75 0 10-1.5.058l.347 9a.75.75 0 101.499-.058l-.346-9zm5.48.058a.75.75 0 10-1.498-.058l-.347 9a.75.75 0 001.5.058l.345-9z" clipRule="evenodd" />
-          </svg>
-        </button>
-        
-          {/* Live Location Tracking Button */}
-          <button 
-            onClick={toggleLiveTracking}
-            className={`button-with-tooltip flex items-center justify-center w-8 h-8 md:w-10 md:h-10 ${isLiveTracking ? 'bg-amber-600 hover:bg-amber-700' : 'bg-amber-500 hover:bg-amber-600'} text-white rounded-full shadow-lg`}
-            data-tooltip={isLiveTracking ? "Stop Live Tracking" : "Start Live Tracking"}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 md:w-6 md:h-6">
-              <path fillRule="evenodd" d="M3.22 3.22a.75.75 0 011.06 0l3.97 3.97V4.5a.75.75 0 011.5 0V9a.75.75 0 01-.75.75H4.5a.75.75 0 010-1.5h2.69L3.22 4.28a.75.75 0 010-1.06zm17.56 0a.75.75 0 010 1.06l-3.97 3.97h2.69a.75.75 0 010 1.5H15a.75.75 0 01-.75-.75V4.5a.75.75 0 011.5 0v2.69l3.97-3.97a.75.75 0 011.06 0zM3.75 15a.75.75 0 00.75-.75H9a.75.75 0 00.75.75v4.5a.75.75 0 00-1.5 0v-2.69l-3.97 3.97a.75.75 0 01-1.06-1.06l3.97-3.97H4.5a.75.75 0 01-.75-.75zm10.5 0a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-2.69l3.97 3.97a.75.75 0 11-1.06 1.06l-3.97-3.97v2.69a.75.75 0 01-1.5 0V15z" clipRule="evenodd" />
               </svg>
           </button>
         </div>
@@ -3412,47 +3568,7 @@ function Home() {
         </div>
       )}
       
-      {/* Live Tracking Stats Panel - Now with pulsing effect when active */}
-      {isLiveTracking && (
-        <div className="absolute top-20 left-4 z-50 bg-amber-50 border border-purple-300 rounded-lg shadow-lg p-3 pointer-events-auto max-w-xs">
-          <div className="flex justify-between items-center">
-            <h3 className="font-bold text-purple-800">Live Tracking</h3>
-            <div className="animate-pulse h-3 w-3 bg-purple-500 rounded-full live-tracking-pulse"></div>
-      </div>
-          
-          <div className="mt-2 space-y-1 text-sm">
-            <div className="flex justify-between">
-              <span className="text-gray-600">Distance:</span>
-              <span className="font-medium">{trackingStats.distance.toFixed(2)} km</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-600">Duration:</span>
-              <span className="font-medium">{elapsedTime}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-600">Speed:</span>
-              <span className="font-medium">{trackingStats.speed} km/h</span>
-            </div>
-            {selectedRoute && (
-              <div className="flex justify-between">
-                <span className="text-gray-600">Route:</span>
-                <span className="font-medium">{selectedRoute.title || 'Unknown'}</span>
-              </div>
-            )}
-            <div className="flex justify-between">
-              <span className="text-gray-600">Points:</span>
-              <span className="font-medium">{trackingPath.length}</span>
-            </div>
-      </div>
-          
-          <button 
-            onClick={toggleLiveTracking}
-            className="mt-2 w-full py-1 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded"
-          >
-            Stop Tracking
-          </button>
-        </div>
-      )}
+      {/* Integrated tracking panel, no separate live tracking panel needed */}
       
       {/* Route Generation Panel (Floating) - with higher z-index */}
       {showGenerateForm && (
@@ -3542,8 +3658,21 @@ function Home() {
                   }`}
                   onClick={() => handleRouteSelect(route)}
                 >
+                  <div className="flex justify-between items-start">
                   <h4 className="font-bold text-gray-800">{route.title || 'Unnamed Route'}</h4>
+                    {route.completed && (
+                      <span className="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full">Completed</span>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-500">{route.description || 'No description'}</p>
+                  
+                  {/* Route path visualization with Leaflet map */}
+                  <div className="mt-2 relative">
+                    <RouteMiniMap route={route} />
+                    <div className="absolute top-1 left-1 bg-white bg-opacity-70 rounded px-1 text-xs">
+                      {route.distance ? `${route.distance.toFixed(1)} km` : ''}
+                    </div>
+                  </div>
                   
                   <div className="mt-2 flex justify-between text-xs text-gray-600">
                     <span>Distance: {route.distance || '?'} km</span>
@@ -3620,9 +3749,15 @@ function Home() {
               <div className="p-2 bg-purple-50 rounded-lg border border-purple-200">
                 <div className="flex justify-between items-center mb-1">
                   <h3 className="font-bold text-xs text-purple-800">
-                    {isSimulating ? 'Simulating Route' : isAutoCompleted ? 'Route Completed!' : 'Following Route'}
+                    {isSimulating ? 'Simulating Route' : isAutoCompleted ? 'Route Completed!' : 'Tracking Route'}
                   </h3>
                   <div className={`h-2 w-2 rounded-full ${isAutoCompleted ? 'bg-green-500' : 'animate-pulse bg-purple-500'}`}></div>
+                  {socketRef.current && socketRef.current.connected && (
+                    <div className="text-xs text-green-600 flex items-center">
+                      <div className="h-1.5 w-1.5 rounded-full bg-green-500 mr-1"></div>
+                      Live
+                    </div>
+                  )}
                 </div>
                 
                 <div className="grid grid-cols-2 gap-1 mb-1">
@@ -3707,50 +3842,84 @@ function Home() {
                 )}
                 
                 {/* Add Mark as Done button for auto-completed routes */}
-                {isAutoCompleted ? (
-                  <button 
-                    onClick={handleMarkAsDone}
-                    className="mt-1 w-full py-1 bg-green-500 hover:bg-green-600 text-white rounded text-xs font-medium"
-                  >
-                    Mark as Done
-                  </button>
-                ) : (
+                            {isAutoCompleted ? (
+              <button 
+                onClick={handleMarkAsDone}
+                className="mt-1 w-full py-1 bg-green-500 hover:bg-green-600 text-white rounded text-xs font-medium"
+              >
+                Mark as Done
+              </button>
+            ) : (
+              <div className="mt-1 flex space-x-1">
                 <button 
                   onClick={isSimulating ? toggleSimulation : toggleTracking}
-                  className="mt-1 w-full py-1 bg-red-500 hover:bg-red-600 text-white rounded text-xs font-medium"
+                  className="flex-1 py-1 bg-red-500 hover:bg-red-600 text-white rounded text-xs font-medium"
                 >
                   {isSimulating ? 'Stop Simulation' : 'Stop Tracking'}
                 </button>
-                )}
+                
+                <button 
+                  onClick={handleResetSession}
+                  className="flex-1 py-1 bg-gray-500 hover:bg-gray-600 text-white rounded text-xs font-medium"
+                >
+                  Reset
+                </button>
+              </div>
+            )}
               </div>
             </div>
-          ) : (
-            <div className="mt-1 flex flex-col space-y-1">
-              <div className="flex space-x-1">
+                ) : (
+        <div className="mt-1 flex flex-col space-y-1">
+          {/* Activity Type Selector */}
+          <div className="mb-2">
+            <label className="block text-xs text-gray-500 mb-1">Activity Type</label>
+            <select 
+              value={activityType}
+              onChange={handleActivityTypeChange}
+              className="w-full p-1 text-xs border border-gray-300 rounded shadow-sm"
+            >
+              <option value="run">Run</option>
+              <option value="jog">Jog</option>
+              <option value="walk">Walk</option>
+              <option value="cycling">Cycling</option>
+              <option value="hiking">Hiking</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          
+          <div className="flex space-x-1">
             <button 
-                  className="flex-1 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
+              className="flex-1 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700"
               onClick={toggleTracking}
             >
               Start Route
-                </button>
-                
-                <button 
-                  className="flex-1 py-1 bg-amber-500 text-white rounded text-xs font-medium hover:bg-amber-600"
-                  onClick={toggleSimulation}
-                >
-                  Simulate Route
-                </button>
-              </div>
+            </button>
+            
+            <button 
+              className="flex-1 py-1 bg-amber-500 text-white rounded text-xs font-medium hover:bg-amber-600"
+              onClick={toggleSimulation}
+            >
+              Simulate Route
+            </button>
+          </div>
               
               {/* Only show save button for generated routes or if it doesn't have an ID */}
-              {(!selectedRoute._id || selectedRoute._id.startsWith('generated-')) && (
-                <button 
-                  className="w-full py-1 bg-blue-500 text-white rounded text-xs font-medium hover:bg-blue-600"
-                  onClick={handleSaveRoute}
-                >
-                  Save Route
+                        {(!selectedRoute._id || selectedRoute._id.startsWith('generated-')) && (
+            <button 
+              className="w-full py-1 bg-blue-500 text-white rounded text-xs font-medium hover:bg-blue-600"
+              onClick={handleSaveRoute}
+            >
+              Save Route
             </button>
-              )}
+          )}
+          
+          {/* Add Reset Session button */}
+          <button 
+            className="w-full py-1 bg-gray-500 text-white rounded text-xs font-medium hover:bg-gray-600"
+            onClick={handleResetSession}
+          >
+            Reset Session
+          </button>
             </div>
           )}
         </div>

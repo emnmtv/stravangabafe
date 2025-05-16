@@ -4,6 +4,7 @@ import LoginPage from './LoginPage';
 import RegisterPage from './RegisterPage';
 import Home from './components/Home';
 import ProfilePage from './components/ProfilePage';
+import ActivitiesPage from './components/ActivitiesPage';
 
 // Redirect authenticated users away from login/register pages
 const RedirectIfLoggedIn = ({ children }) => {
@@ -64,7 +65,7 @@ const AppRouter = () => {
       } />
       <Route path="/activities" element={
         <ProtectedRoute>
-          <Home />
+          <ActivitiesPage />
         </ProtectedRoute>
       } />
       <Route path="/profile" element={
