@@ -5,6 +5,9 @@ import RegisterPage from './RegisterPage';
 import Home from './components/Home';
 import ProfilePage from './components/ProfilePage';
 import ActivitiesPage from './components/ActivitiesPage';
+import MyRoutesPage from './components/MyRoutesPage';
+import AdminRoutesPage from './components/admin/AdminRoutesPage';
+import AdminLoginPage from './adminLognPage';
 
 // Redirect authenticated users away from login/register pages
 const RedirectIfLoggedIn = ({ children }) => {
@@ -51,6 +54,7 @@ const AppRouter = () => {
           <RegisterPage />
         </RedirectIfLoggedIn>
       } />
+      <Route path="/admin/login" element={<AdminLoginPage />} />
 
       {/* Protected routes */}
       <Route path="/home" element={
@@ -60,7 +64,7 @@ const AppRouter = () => {
       } />
       <Route path="/routes" element={
         <ProtectedRoute>
-          <Home />
+          <MyRoutesPage />
         </ProtectedRoute>
       } />
       <Route path="/activities" element={
@@ -73,9 +77,16 @@ const AppRouter = () => {
           <ProfilePage />
         </ProtectedRoute>
       } />
+      
+      {/* Admin routes */}
       <Route path="/admin" element={
         <ProtectedRoute requiredRole="ADMIN">
           <Home />
+        </ProtectedRoute>
+      } />
+      <Route path="/admin/routes" element={
+        <ProtectedRoute requiredRole="ADMIN">
+          <AdminRoutesPage />
         </ProtectedRoute>
       } />
 

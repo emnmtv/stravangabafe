@@ -57,6 +57,32 @@ const ActivityTypeFilter = ({ selectedType, onChange }) => {
   );
 };
 
+// Add a new SimulationFilter component
+const SimulationFilter = ({ selectedFilter, onChange }) => {
+  const filters = [
+    { value: 'all', label: 'All Activities' },
+    { value: 'real', label: 'Real Activities' },
+    { value: 'simulated', label: 'Simulated' }
+  ];
+
+    return (    <div className="flex flex-wrap items-center gap-2 mt-3">      <div className="text-sm text-gray-600 mr-2">Activity Source:</div>
+      {filters.map(filter => (
+        <button
+          key={filter.value}
+          onClick={() => onChange(filter.value)}
+          className={`px-3 py-1.5 rounded-full text-sm ${
+            selectedFilter === filter.value
+              ? 'bg-blue-600 text-white'
+              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+          }`}
+        >
+          {filter.label}
+        </button>
+      ))}
+    </div>
+  );
+};
+
 const ActivityCard = ({ activity, onClick }) => {
   // Format date
   const formatDate = (dateString) => {
@@ -151,9 +177,16 @@ const ActivityCard = ({ activity, onClick }) => {
             <h3 className="font-bold text-lg mb-1">{activity.title || 'Untitled Activity'}</h3>
             <p className="text-gray-500 text-sm">{formatDate(activity.startTime)}</p>
           </div>
-          <span className={`inline-block px-2 py-1 rounded-full text-xs ${activityMeta.color}`}>
-            {activityMeta.icon} {activityMeta.title}
-          </span>
+          <div className="flex flex-col items-end gap-1">
+            <span className={`inline-block px-2 py-1 rounded-full text-xs ${activityMeta.color}`}>
+              {activityMeta.icon} {activityMeta.title}
+            </span>
+            {activity.simulated && (
+              <span className="inline-block px-2 py-1 rounded-full text-xs bg-amber-100 text-amber-800">
+                ⚡ Simulated
+              </span>
+            )}
+          </div>
         </div>
         
         <div className="grid grid-cols-2 gap-4">
@@ -365,9 +398,16 @@ const ActivityDetailModal = ({ activity, onClose }) => {
         <div className="p-4">
           {/* Activity Type Badge */}
           <div className="mb-4">
-            <span className="inline-block px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm">
-              {activity.type?.charAt(0).toUpperCase() + activity.type?.slice(1) || 'Activity'} 
-            </span>
+            <div className="flex flex-wrap gap-2">
+              <span className="inline-block px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm">
+                {activity.type?.charAt(0).toUpperCase() + activity.type?.slice(1) || 'Activity'} 
+              </span>
+              {activity.simulated && (
+                <span className="inline-block px-3 py-1 bg-amber-100 text-amber-800 rounded-full text-sm">
+                  ⚡ Simulated Activity
+                </span>
+              )}
+            </div>
             <p className="text-gray-600 mt-2 text-sm">{activity.description || 'No description'}</p>
           </div>
           
@@ -511,6 +551,7 @@ const ActivitiesPage = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState('');
+  const [simulationFilter, setSimulationFilter] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalActivities, setTotalActivities] = useState(0);
   const activitiesPerPage = 8;
@@ -560,7 +601,7 @@ const ActivitiesPage = () => {
         bottom: 0;
         z-index: 50;
         background-color: rgba(0, 0, 0, 0.5);
-        padding: 1rem;
+        overflow: hidden;
       }
       .activity-modal-content {
         background-color: white;
@@ -568,9 +609,16 @@ const ActivitiesPage = () => {
         box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
         width: 100%;
         max-width: 32rem;
-        max-height: 80vh;
+        max-height: calc(100vh - 2rem);
         overflow-y: auto;
-        position: relative;
+        margin: 1rem;
+        display: flex;
+        flex-direction: column;
+      }
+      .modal-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1rem;
       }
       .modal-header {
         position: sticky;
@@ -639,8 +687,21 @@ const ActivitiesPage = () => {
       const response = await getUserActivities(token, options);
 
       if (response.success) {
-        setActivities(response.data);
-        setTotalActivities(response.total);
+        let filteredActivities = [...response.data];
+        
+        // Apply simulation filter
+        if (simulationFilter === 'real') {
+          filteredActivities = filteredActivities.filter(activity => activity.simulated === false);
+        } else if (simulationFilter === 'simulated') {
+          filteredActivities = filteredActivities.filter(activity => activity.simulated === true);
+        }
+
+        setActivities(filteredActivities);
+        // Adjust total count based on simulation filter
+        const filteredTotal = simulationFilter === 'all' 
+          ? response.total 
+          : filteredActivities.length;
+        setTotalActivities(filteredTotal);
       } else {
         setError(response.message || 'Failed to fetch activities');
       }
@@ -650,14 +711,14 @@ const ActivitiesPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [filter, currentPage, activitiesPerPage]);
+  }, [filter, currentPage, activitiesPerPage, simulationFilter]);
 
   // Fetch activities on component mount and when filters change
   useEffect(() => {
     if (activeTab === 'activities') {
       fetchActivities();
     }
-  }, [filter, currentPage, activeTab, fetchActivities]);
+  }, [filter, currentPage, simulationFilter, activeTab, fetchActivities]);
   
   // Fetch active session when tab changes - disabled for now
   // This is kept for future use when we re-enable the active session tab
@@ -791,6 +852,11 @@ const ActivitiesPage = () => {
 
   const handleFilterChange = (type) => {
     setFilter(type);
+    setCurrentPage(1); // Reset to page 1 when filter changes
+  };
+
+  const handleSimulationFilterChange = (type) => {
+    setSimulationFilter(type);
     setCurrentPage(1); // Reset to page 1 when filter changes
   };
 
@@ -949,6 +1015,7 @@ const ActivitiesPage = () => {
           <>
             <div className="bg-white rounded-lg shadow-sm p-4 mb-6">
               <ActivityTypeFilter selectedType={filter} onChange={handleFilterChange} />
+              <SimulationFilter selectedFilter={simulationFilter} onChange={handleSimulationFilterChange} />
             </div>
 
         {loading && activities.length === 0 ? (

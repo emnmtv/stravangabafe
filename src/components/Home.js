@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { getUserRoutes, generateRoute, saveRoute, startSession, startSessionWithActivityType, stopSession, resetSession } from '../services/apiService';
+import { getUserRoutes, generateRoute, saveRoute, startSessionWithActivityType, stopSession, resetSession, SOCKET_URL, getNearbyRoutes, createRouteManually } from '../services/apiService';
 import io from 'socket.io-client';
 
 // Calculate distance between two points in kilometers
@@ -58,21 +58,37 @@ function MapController({ setMapRef, routeKey }) {
   useEffect(() => {
     if (map) {
       console.log('MapController - Setting map reference, routeKey:', routeKey);
+      
       // Set map reference safely after the map is fully initialized
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        try {
+          // Check if the map is still valid before setting the reference
+          if (map && !map._isDestroyed && map._container && map._loaded) {
         setMapRef(map);
         
-        // Safe map invalidation - with more robust error handling
-        try {
-          if (map && typeof map.invalidateSize === 'function' && map._container && map._loaded) {
+            // Safe map invalidation with robust error handling
+            if (typeof map.invalidateSize === 'function') {
             map.invalidateSize(true);
+            }
           }
         } catch (e) {
-          console.error('Error invalidating map size:', e);
+          console.error('Error setting map reference:', e);
         }
-      }, 500);
+      }, 300);
+      
+      return () => {
+        clearTimeout(timer);
+      };
     }
   }, [map, setMapRef, routeKey]);
+  
+  // Add cleanup effect
+  useEffect(() => {
+    return () => {
+      // Clean up map reference on unmount
+      setMapRef(null);
+    };
+  }, [setMapRef]);
   
   return null;
 }
@@ -407,6 +423,115 @@ const RouteMiniMap = ({ route }) => {
   );
 };
 
+// Add the ManualRoutePreview component
+function ManualRoutePreview({ manualRoute }) {
+  const startCoords = manualRoute.startPoint.coordinates;
+  const endCoords = manualRoute.endPoint.coordinates;
+  const pathCoords = manualRoute.path.coordinates;
+  
+  // Convert GeoJSON coordinates [lng, lat] to Leaflet format [lat, lng]
+  const startPoint = startCoords[0] !== 0 && startCoords[1] !== 0 ? [startCoords[1], startCoords[0]] : null;
+  const endPoint = endCoords[0] !== 0 && endCoords[1] !== 0 ? [endCoords[1], endCoords[0]] : null;
+  
+  // Convert path coordinates from [lng, lat] to [lat, lng]
+  const pathPoints = pathCoords.length > 0 
+    ? pathCoords.map(coord => [coord[1], coord[0]]) 
+    : [];
+  
+  // Create full route path combining start, waypoints, and end
+  const fullPath = [];
+  if (startPoint) fullPath.push(startPoint);
+  fullPath.push(...pathPoints);
+  if (endPoint && (pathPoints.length === 0 || 
+      endPoint[0] !== pathPoints[pathPoints.length-1][0] || 
+      endPoint[1] !== pathPoints[pathPoints.length-1][1])) {
+    fullPath.push(endPoint);
+  }
+  
+  // Define marker icons for start/end points with improved visibility
+  const startMarkerIcon = new L.DivIcon({
+    className: 'custom-div-icon',
+    html: `
+      <div style="position: relative;">
+        <div style="background-color: #4CAF50; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;">
+          <span style="color: white; font-size: 12px; font-weight: bold;">S</span>
+        </div>
+        <div style="position: absolute; bottom: -15px; left: 50%; transform: translateX(-50%); background-color: #4CAF50; color: white; border-radius: 2px; padding: 2px 4px; font-size: 8px; white-space: nowrap;">START</div>
+      </div>`,
+    iconSize: [24, 38],
+    iconAnchor: [12, 12]
+  });
+  
+  const endMarkerIcon = new L.DivIcon({
+    className: 'custom-div-icon',
+    html: `
+      <div style="position: relative;">
+        <div style="background-color: #F44336; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;">
+          <span style="color: white; font-size: 12px; font-weight: bold;">F</span>
+        </div>
+        <div style="position: absolute; bottom: -15px; left: 50%; transform: translateX(-50%); background-color: #F44336; color: white; border-radius: 2px; padding: 2px 4px; font-size: 8px; white-space: nowrap;">FINISH</div>
+      </div>`,
+    iconSize: [24, 38],
+    iconAnchor: [12, 12]
+  });
+  
+  // Create numbered waypoint icons
+  const createWaypointIcon = (index) => {
+    return new L.DivIcon({
+      className: 'custom-div-icon',
+      html: `
+        <div style="position: relative;">
+          <div style="background-color: #3388ff; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;">
+            <span style="color: white; font-size: 10px; font-weight: bold;">${index + 1}</span>
+          </div>
+        </div>`,
+      iconSize: [20, 20],
+      iconAnchor: [10, 10]
+    });
+  };
+  
+  // Only render if we have at least one valid coordinate
+  if (fullPath.length < 1) {
+    return null;
+  }
+  
+  return (
+    <>
+      {fullPath.length > 1 && (
+        <Polyline
+          positions={fullPath}
+          color="#8E24AA"
+          weight={4}
+          opacity={0.7}
+          dashArray="8,8"
+        />
+      )}
+      
+      {startPoint && (
+        <Marker position={startPoint} icon={startMarkerIcon}>
+          <Popup>Start Point</Popup>
+        </Marker>
+      )}
+      
+      {endPoint && (
+        <Marker position={endPoint} icon={endMarkerIcon}>
+          <Popup>End Point</Popup>
+        </Marker>
+      )}
+      
+      {pathPoints.map((point, index) => (
+        <Marker 
+          key={`waypoint-${index}`} 
+          position={point}
+          icon={createWaypointIcon(index)}
+        >
+          <Popup>Waypoint {index + 1}</Popup>
+        </Marker>
+      ))}
+    </>
+  );
+}
+
 function Home() {
   const [currentPosition, setCurrentPosition] = useState(OLONGAPO_COORDINATES);
   const [userRoutes, setUserRoutes] = useState([]);
@@ -439,6 +564,12 @@ function Home() {
   const [showGenerateForm, setShowGenerateForm] = useState(false);
   const [showRouteInfo, setShowRouteInfo] = useState(false);
   const [isPinningLocation, setIsPinningLocation] = useState(false);
+  const [routeListTab, setRouteListTab] = useState('all'); // For routes list filtering (all/completed)
+  
+  // Add route pin mode for map click to add route points
+  const [isRoutePinMode, setIsRoutePinMode] = useState(false);
+  const [routePinType, setRoutePinType] = useState(null); // 'start', 'end', or 'path'
+  const [isConnectWaypoints, setIsConnectWaypoints] = useState(true); // Auto-connect waypoints along roads
   
   // Route generation states
   const [routeType, setRouteType] = useState('short');
@@ -473,6 +604,190 @@ function Home() {
 
   // Add new state variable for auto-completed state
   const [isAutoCompleted, setIsAutoCompleted] = useState(false);
+
+  // Add a state variable to store nearby routes (around line 437)
+  const [nearbyRoutes, setNearbyRoutes] = useState([]);
+  const [loadingNearby, setLoadingNearby] = useState(false);
+
+  // Manual route creation state
+  const [showManualCreateForm, setShowManualCreateForm] = useState(false);
+  const [manualRoute, setManualRoute] = useState({
+    title: '',
+    description: '',
+    distance: 0,
+    elevationGain: 0,
+    isPublic: true,
+    startPoint: {
+      type: 'Point',
+      coordinates: [0, 0] // [longitude, latitude]
+    },
+    endPoint: {
+      type: 'Point',
+      coordinates: [0, 0]
+    },
+    path: {
+      type: 'LineString',
+      coordinates: [] // Array of [longitude, latitude] points
+    }
+  });
+  
+  // Reset manual route with current location as start point
+  const initializeManualRoute = () => {
+    if (currentPosition) {
+      setManualRoute({
+        title: `Route ${new Date().toLocaleDateString()}`,
+        description: '',
+        distance: 0,
+        elevationGain: 0,
+        isPublic: true,
+        startPoint: {
+          type: 'Point',
+          coordinates: [currentPosition[1], currentPosition[0]] // [lng, lat]
+        },
+        endPoint: {
+          type: 'Point',
+          coordinates: [0, 0]
+        },
+        path: {
+          type: 'LineString',
+          coordinates: []
+        }
+      });
+    }
+  };
+
+
+
+  // Function to fetch nearby routes using the user's current location
+  const fetchNearbyRoutes = async () => {
+    if (!currentPosition) {
+      alert('Unable to determine your current location. Please enable location services and try again.');
+      setLoadingNearby(false);
+      return;
+    }
+    
+    try {
+      setLoadingNearby(true);
+      console.log('Fetching nearby routes from position:', currentPosition);
+      
+      // Get the user's current location for nearby search
+      const response = await getNearbyRoutes({
+        latitude: currentPosition[0],
+        longitude: currentPosition[1],
+        maxDistance: 5 // Reduced to 5km to only show truly nearby routes
+      });
+      
+      if (response.success) {
+        console.log('Nearby routes found:', response.data.length);
+        
+        // Process routes to add Leaflet-compatible coordinates
+        const processedRoutes = response.data.map(route => {
+          // Create default values in case data is missing
+          let pathCoordinates = [];
+          let startPoint = OLONGAPO_COORDINATES;
+          let endPoint = OLONGAPO_COORDINATES;
+          
+          // Process path coordinates directly from raw data
+          try {
+            let coordinates = [];
+            
+            if (typeof route.path === 'string') {
+              // If path is a string, parse it
+              try {
+                const parsedPath = JSON.parse(route.path);
+                coordinates = parsedPath.coordinates || [];
+              } catch (e) {
+                // Silent error handling for performance
+              }
+            } else if (route.path && route.path.coordinates) {
+              // If path is an object with coordinates property
+              coordinates = route.path.coordinates;
+            } else if (route.path && Array.isArray(route.path)) {
+              // If path is directly an array of coordinates
+              coordinates = route.path;
+            }
+            
+            // Convert from GeoJSON [lng, lat] to Leaflet [lat, lng]
+            if (Array.isArray(coordinates) && coordinates.length > 0) {
+              pathCoordinates = coordinates.map(coord => {
+                if (Array.isArray(coord) && coord.length >= 2) {
+                  return [coord[1], coord[0]]; // Swap to Leaflet format
+                } else {
+                  return OLONGAPO_COORDINATES;
+                }
+              });
+            }
+          } catch (e) {
+            // Silent error handling for performance
+          }
+          
+          // Process start point
+          if (route.startPoint) {
+            try {
+              let startPointData = route.startPoint;
+              
+              if (typeof startPointData === 'string') {
+                try {
+                  startPointData = JSON.parse(startPointData);
+                } catch(e) {
+                  // Silent error handling
+                }
+              }
+              
+              if (startPointData.coordinates && Array.isArray(startPointData.coordinates) && startPointData.coordinates.length >= 2) {
+                startPoint = [startPointData.coordinates[1], startPointData.coordinates[0]];
+              }
+            } catch (e) {
+              // Silent error handling
+            }
+          }
+          
+          // Process end point
+          if (route.endPoint) {
+            try {
+              let endPointData = route.endPoint;
+              
+              if (typeof endPointData === 'string') {
+                try {
+                  endPointData = JSON.parse(endPointData);
+                } catch(e) {
+                  // Silent error handling
+                }
+              }
+              
+              if (endPointData.coordinates && Array.isArray(endPointData.coordinates) && endPointData.coordinates.length >= 2) {
+                endPoint = [endPointData.coordinates[1], endPointData.coordinates[0]];
+              }
+            } catch (e) {
+              // Silent error handling
+            }
+          }
+          
+          return {
+            ...route,
+            pathCoordinates,
+            startPoint,
+            endPoint
+          };
+        });
+        
+        setNearbyRoutes(processedRoutes);
+      } else {
+        console.error('Failed to fetch nearby routes:', response.message);
+      }
+    } catch (err) {
+      console.error('Error fetching nearby routes:', err);
+    } finally {
+      setLoadingNearby(false);
+    }
+  };
+
+  // Update the effect that runs when routeListTab changes (add after the useEffect that fetches routes)
+  useEffect(() => {
+    if (routeListTab === 'nearby') {
+      fetchNearbyRoutes();
+    }
+  }, [routeListTab, currentPosition]);
   
   // Add event listener for route completion
   useEffect(() => {
@@ -620,7 +935,8 @@ function Home() {
               endPoint: {
                 type: 'Point',
                 coordinates: [lastPoint[1], lastPoint[0]]
-              }
+              },
+              completed: true // Automatically mark as completed
             };
             
             // Get token and save the route
@@ -1323,7 +1639,8 @@ function Home() {
                   endPoint: {
                     type: 'Point',
                     coordinates: [lastPoint[1], lastPoint[0]]
-                  }
+                  },
+                  completed: true // Automatically mark as completed
                 };
                 
                 // Get token and save the route
@@ -1849,7 +2166,8 @@ function Home() {
           coordinates: pathToUse.map(point => [point[1], point[0]])
         },
         averageSpeed: avgSpeed,
-        maxSpeed: maxSpeed
+        maxSpeed: maxSpeed,
+        simulated: false // Mark activity as not simulated
       });
       
       if (stopResponse.success) {
@@ -1980,7 +2298,7 @@ function Home() {
     const routeName = prompt('Enter a name for this route:', selectedRoute.title || 'My Route');
     if (!routeName) return; // User cancelled
     
-    // Ask if the route is completed
+    // For regular routes that weren't tracked or simulated, still ask if completed
     const isCompleted = window.confirm('Is this a route you have already completed?');
     
     try {
@@ -2088,6 +2406,74 @@ function Home() {
             document.body.removeChild(notification);
           }, 2000);
         }
+        
+        // Handle route pin mode
+        if (isRoutePinMode && routePinType) {
+          const { lat, lng } = e.latlng;
+          const updatedRoute = { ...manualRoute };
+          
+          if (routePinType === 'start') {
+            updatedRoute.startPoint.coordinates = [lng, lat]; // [lng, lat]
+            
+            // Update distance calculation
+            updatedRoute.distance = calculateManualRouteDistance(updatedRoute);
+            setManualRoute(updatedRoute);
+            
+            // Exit pin mode after setting start point
+            setIsRoutePinMode(false);
+            setRoutePinType(null);
+            
+            // Show success notification
+            const notification = document.createElement('div');
+            notification.className = 'route-pin-notification';
+            notification.innerHTML = `<div style="position: fixed; top: 70px; left: 50%; transform: translateX(-50%); background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 4px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">Start point set!</div>`;
+            document.body.appendChild(notification);
+            
+            // Remove notification after 2 seconds
+            setTimeout(() => {
+              document.body.removeChild(notification);
+            }, 2000);
+          } else if (routePinType === 'end') {
+            updatedRoute.endPoint.coordinates = [lng, lat]; // [lng, lat]
+            
+            // Update distance calculation
+            updatedRoute.distance = calculateManualRouteDistance(updatedRoute);
+            setManualRoute(updatedRoute);
+            
+            // Exit pin mode after setting end point
+            setIsRoutePinMode(false);
+            setRoutePinType(null);
+            
+            // Show success notification
+            const notification = document.createElement('div');
+            notification.className = 'route-pin-notification';
+            notification.innerHTML = `<div style="position: fixed; top: 70px; left: 50%; transform: translateX(-50%); background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 4px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">End point set!</div>`;
+            document.body.appendChild(notification);
+            
+            // Remove notification after 2 seconds
+            setTimeout(() => {
+              document.body.removeChild(notification);
+            }, 2000);
+          } else if (routePinType === 'path') {
+            updatedRoute.path.coordinates.push([lng, lat]); // [lng, lat]
+            
+            // Update distance calculation
+            updatedRoute.distance = calculateManualRouteDistance(updatedRoute);
+            setManualRoute(updatedRoute);
+            
+            // Don't exit pin mode for path, allow multiple points to be added
+            // Show success notification
+            const notification = document.createElement('div');
+            notification.className = 'route-pin-notification';
+            notification.innerHTML = `<div style="position: fixed; top: 70px; left: 50%; transform: translateX(-50%); background-color: #4CAF50; color: white; padding: 10px 20px; border-radius: 4px; z-index: 1000; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">Waypoint added!</div>`;
+            document.body.appendChild(notification);
+            
+            // Remove notification after 1 second
+            setTimeout(() => {
+              document.body.removeChild(notification);
+            }, 1000);
+          }
+        }
       };
       
       map.on('click', handleMapClick);
@@ -2095,8 +2481,7 @@ function Home() {
       return () => {
         map.off('click', handleMapClick);
       };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [map]); // isPinningLocation is from outer scope and shouldn't be in dependency array
+    }, [map, isPinningLocation, isRoutePinMode, routePinType, manualRoute]);
     
     return null;
   };
@@ -2132,7 +2517,7 @@ function Home() {
     }
   };
 
-  // Add this style for animations at the start of your render function
+  // Handle map initialization and cleanup
   React.useEffect(() => {
     // Add CSS animation for route lines
     const style = document.createElement('style');
@@ -2148,8 +2533,86 @@ function Home() {
     `;
     document.head.appendChild(style);
     
+    // Clean up function - executed when component unmounts
     return () => {
+      // Remove style elements
+      if (document.head.contains(style)) {
       document.head.removeChild(style);
+      }
+      
+      // Clean up ALL possible map instances to prevent "container being reused" error
+      try {
+        // Get all Leaflet map containers that might exist
+        const mapContainers = document.querySelectorAll('.leaflet-container');
+        
+        // Clean up each container and its map instance
+        mapContainers.forEach(container => {
+          // Get the map instance from the container (if it exists)
+          const mapInstance = container._leaflet_id ? L.maps[container._leaflet_id] : null;
+          
+          if (mapInstance) {
+            // Stop all animations and timers
+            mapInstance.stopLocate();
+            mapInstance.stop(); // Stop all animations
+            
+            // Remove all layers
+            mapInstance.eachLayer(layer => {
+              if (layer) {
+                try {
+                  mapInstance.removeLayer(layer);
+                } catch (e) {
+                  // Ignore errors removing layers
+                }
+              }
+            });
+            
+            // Remove all event listeners
+            mapInstance.off();
+            
+            // Remove all controls
+            if (mapInstance._controlCorners) {
+              Object.keys(mapInstance._controlCorners).forEach(cornerName => {
+                const corner = mapInstance._controlCorners[cornerName];
+                while (corner && corner.firstChild) {
+                  corner.removeChild(corner.firstChild);
+                }
+              });
+            }
+            
+            // Remove the map completely
+            mapInstance.remove();
+            
+            // Make sure the container is cleaned up
+            if (container.parentNode) {
+              try {
+                // Remove all child elements first
+                while (container.firstChild) {
+                  container.removeChild(container.firstChild);
+                }
+                
+                // Then remove the container itself
+                container.parentNode.removeChild(container);
+              } catch (e) {
+                console.error('Error removing map container:', e);
+              }
+            }
+          }
+        });
+        
+        // Clear any map reference
+        if (mapRef) {
+          setMapRef(null);
+        }
+        
+        // Force a global cleanup of all Leaflet resources
+        for (const prop in L) {
+          if (L[prop] && L[prop].cleanup) {
+            L[prop].cleanup();
+          }
+        }
+      } catch (e) {
+        console.error('Error during map cleanup:', e);
+      }
     };
   }, []);
 
@@ -2170,7 +2633,7 @@ function Home() {
   // Initialize Socket.io connection
   const initializeSocket = () => {
     // Correct server address from environment or use default
-    const serverUrl = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
+    const serverUrl = SOCKET_URL;
     console.log('Connecting to socket server at:', serverUrl);
     
     // Clear any existing socket
@@ -3046,7 +3509,8 @@ function Home() {
         endPoint: {
           type: 'Point',
           coordinates: [lastPoint[1], lastPoint[0]]
-        }
+        },
+        completed: true // Automatically mark simulated routes as completed
       };
       
       // Get token and save the route
@@ -3190,7 +3654,8 @@ function Home() {
           coordinates: pathToUse.map(point => [point[1], point[0]])
         },
         averageSpeed: avgSpeed,
-        maxSpeed: parseFloat(avgSpeed) * 1.2 || 10
+        maxSpeed: parseFloat(avgSpeed) * 1.2 || 10,
+        simulated: true // Mark activity as simulated
       });
       
       if (stopResponse.success) {
@@ -3278,6 +3743,217 @@ function Home() {
     setActivityType(e.target.value);
   };
 
+  // Add a function to handle manual route creation form submission
+  const handleManualRouteCreate = async (e) => {
+    e.preventDefault();
+    
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        alert('Please login first to create routes');
+        return;
+      }
+      
+      // Validate inputs
+      if (!manualRoute.title || manualRoute.path.coordinates.length < 2) {
+        alert('Please provide a title and at least 2 path coordinates');
+        return;
+      }
+      
+      // Call the API to create the route
+      const result = await createRouteManually(token, manualRoute);
+      
+      if (result.success) {
+        alert('Route created successfully!');
+        // Clean up all form-related state
+        setShowManualCreateForm(false);
+        setIsRoutePinMode(false);
+        setRoutePinType(null);
+        
+        // Remove any minimized form class
+        const formElement = document.querySelector('.manual-route-form');
+        if (formElement) {
+          formElement.classList.remove('minimized');
+        }
+        
+        // Process the created route for display
+        const createdRoute = result.data;
+        
+        // Process path coordinates
+        let pathCoordinates = [];
+        let startPoint = currentPosition;
+        let endPoint = currentPosition;
+        
+        if (createdRoute.path && createdRoute.path.coordinates) {
+          pathCoordinates = createdRoute.path.coordinates.map(coord => [coord[1], coord[0]]);
+        }
+        
+        if (createdRoute.startPoint && createdRoute.startPoint.coordinates) {
+          startPoint = [
+            createdRoute.startPoint.coordinates[1], 
+            createdRoute.startPoint.coordinates[0]
+          ];
+        }
+        
+        if (createdRoute.endPoint && createdRoute.endPoint.coordinates) {
+          endPoint = [
+            createdRoute.endPoint.coordinates[1], 
+            createdRoute.endPoint.coordinates[0]
+          ];
+        }
+        
+        const processedRoute = {
+          ...createdRoute,
+          pathCoordinates,
+          startPoint,
+          endPoint
+        };
+        
+        // Display the new route
+        setSelectedRoute(processedRoute);
+        setShowRouteInfo(true);
+        
+        // Force map redraw to ensure route is displayed
+        setMapKey(Date.now());
+        
+        // Reset the form
+        setManualRoute({
+          title: '',
+          description: '',
+          distance: 0,
+          elevationGain: 0,
+          isPublic: true,
+          startPoint: {
+            type: 'Point',
+            coordinates: [0, 0]
+          },
+          endPoint: {
+            type: 'Point',
+            coordinates: [0, 0]
+          },
+          path: {
+            type: 'LineString',
+            coordinates: []
+          }
+        });
+      } else {
+        alert('Failed to create route: ' + (result.message || 'Unknown error'));
+      }
+    } catch (err) {
+      console.error('Error creating route:', err);
+      alert('Error creating route: ' + err.message);
+    }
+  };
+
+  // Add helper function to update coordinates in the manual route form
+  const handleCoordinateChange = (type, index, coordIndex, value) => {
+    const updatedRoute = { ...manualRoute };
+    
+    if (type === 'path') {
+      // Ensure path coordinates array exists and has enough elements
+      if (!updatedRoute.path.coordinates[index]) {
+        updatedRoute.path.coordinates[index] = [0, 0];
+      }
+      updatedRoute.path.coordinates[index][coordIndex] = parseFloat(value) || 0;
+    } else if (type === 'start') {
+      updatedRoute.startPoint.coordinates[coordIndex] = parseFloat(value) || 0;
+    } else if (type === 'end') {
+      updatedRoute.endPoint.coordinates[coordIndex] = parseFloat(value) || 0;
+    }
+    
+    // Update the route distance
+    updatedRoute.distance = calculateManualRouteDistance(updatedRoute);
+    setManualRoute(updatedRoute);
+  };
+
+  // Add helper to add new coordinate pair to the path
+  const addPathCoordinate = () => {
+    const updatedRoute = {
+      ...manualRoute,
+      path: {
+        ...manualRoute.path,
+        coordinates: [...manualRoute.path.coordinates, [0, 0]]
+      }
+    };
+    
+    setManualRoute(updatedRoute);
+  };
+
+  // Add helper to remove a coordinate pair from the path
+  const removePathCoordinate = (index) => {
+    const updatedCoordinates = [...manualRoute.path.coordinates];
+    updatedCoordinates.splice(index, 1);
+    
+    const updatedRoute = {
+      ...manualRoute,
+      path: {
+        ...manualRoute.path,
+        coordinates: updatedCoordinates
+      }
+    };
+    
+    // Update the route distance after removing a point
+    updatedRoute.distance = calculateManualRouteDistance(updatedRoute);
+    setManualRoute(updatedRoute);
+  };
+
+  // Add helper to use current location
+  const addCurrentLocation = (type) => {
+    if (!currentPosition) {
+      alert('Current location not available');
+      return;
+    }
+    
+    const updatedRoute = { ...manualRoute };
+    
+    if (type === 'start') {
+      updatedRoute.startPoint.coordinates = [currentPosition[1], currentPosition[0]]; // [lng, lat]
+    } else if (type === 'end') {
+      updatedRoute.endPoint.coordinates = [currentPosition[1], currentPosition[0]]; // [lng, lat]
+    } else if (type === 'path') {
+      updatedRoute.path.coordinates.push([currentPosition[1], currentPosition[0]]); // [lng, lat]
+    }
+    
+    // Update the route distance
+    updatedRoute.distance = calculateManualRouteDistance(updatedRoute);
+    setManualRoute(updatedRoute);
+  };
+  
+  // Add a function to calculate the distance of the manual route
+  const calculateManualRouteDistance = (route) => {
+    // Create full route path
+    const fullPath = [];
+    
+    // Add start point if valid
+    if (route.startPoint.coordinates[0] !== 0 || route.startPoint.coordinates[1] !== 0) {
+      fullPath.push([
+        route.startPoint.coordinates[1], // Convert to [lat, lng] for calculation
+        route.startPoint.coordinates[0]
+      ]);
+    }
+    
+    // Add all path waypoints
+    if (route.path.coordinates.length > 0) {
+      for (const coord of route.path.coordinates) {
+        fullPath.push([coord[1], coord[0]]); // Convert to [lat, lng]
+      }
+    }
+    
+    // Add end point if valid and different from last path point
+    if (route.endPoint.coordinates[0] !== 0 || route.endPoint.coordinates[1] !== 0) {
+      const endPoint = [route.endPoint.coordinates[1], route.endPoint.coordinates[0]];
+      
+      // Only add if different from the last point
+      const lastPoint = fullPath.length > 0 ? fullPath[fullPath.length - 1] : null;
+      if (!lastPoint || endPoint[0] !== lastPoint[0] || endPoint[1] !== lastPoint[1]) {
+        fullPath.push(endPoint);
+      }
+    }
+    
+    // Calculate the distance using the route coordinates
+    return calculateRouteDistance(fullPath);
+  };
+
   if (loading && !currentPosition) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
@@ -3287,7 +3963,7 @@ function Home() {
   }
 
   return (
-    <div className="h-full w-full relative overflow-hidden">
+    <div className={`h-full w-full relative overflow-hidden ${isRoutePinMode ? 'map-pin-cursor' : ''}`}>
       {/* Map styles - moved from style jsx to style tags */}
       <style>
         {`
@@ -3412,8 +4088,9 @@ function Home() {
       {/* Map container */}
       <div 
         className={`absolute inset-0 ${isPinningLocation ? 'map-pin-cursor' : ''}`}
+        id="map-container"
         ref={mapContainerRef}
-        style={{ height: '100%', width: '100%' }}
+        style={{ height: '100%', width: '100%', position: 'relative' }}
       >
         <MapContainer
           key={`map-container-${mapKey}`}
@@ -3422,15 +4099,22 @@ function Home() {
           style={{ height: '100%', width: '100%' }}
           zoomControl={false}
           attributionControl={false}
-          // Remove the restrictive maxBounds to allow viewing beyond Olongapo
-          // maxBounds={[
-          //   [14.7886, 120.2342], // Southwest bounds of Olongapo
-          //   [14.8886, 120.3342]  // Northeast bounds of Olongapo
-          // ]}
-          minZoom={10} // Reduced from 12 to allow zooming out more
+          minZoom={10}
           maxZoom={18}
           whenReady={(map) => {
             console.log('Map is ready, key:', mapKey);
+          }}
+          whenCreated={(map) => {
+            // Make sure any old map instance is properly removed
+            try {
+              if (mapRef && typeof mapRef.remove === 'function') {
+                mapRef.off();
+                mapRef._handlers.forEach(handler => handler.disable());
+                mapRef.remove();
+              }
+            } catch (e) {
+              console.error('Error cleaning up old map:', e);
+            }
           }}
         >
           <MapController setMapRef={setMapRef} routeKey={mapKey} />
@@ -3475,14 +4159,15 @@ function Home() {
               isTracking={isTracking}
             />
           )}
+          
+          {/* Manual route preview when in manual route creation mode */}
+          {showManualCreateForm && <ManualRoutePreview manualRoute={manualRoute} />}
         </MapContainer>
       </div>
       
       {/* Top Control Bar - with higher z-index */}
       <div className="absolute top-4 left-0 right-0 z-50 px-2 md:px-4 flex justify-between items-center pointer-events-none">
-        <div className="bg-white rounded-lg shadow-lg p-2 pointer-events-auto hidden md:block">
-          <h1 className="font-bold text-lg text-green-600">Olongapo Run Tracker</h1>
-        </div>
+        
         
         <div className="flex space-x-1 md:space-x-2 pointer-events-auto ml-auto">
           <button 
@@ -3514,6 +4199,7 @@ function Home() {
               setShowGenerateForm(!showGenerateForm);
               setShowRoutesList(false);
               setIsPinningLocation(false);
+              setShowManualCreateForm(false);
             }}
             className={`button-with-tooltip flex items-center justify-center w-8 h-8 md:w-10 md:h-10 ${showGenerateForm ? 'bg-green-700' : 'bg-green-600'} hover:bg-green-700 text-white rounded-full shadow-lg`}
             data-tooltip="Generate Route"
@@ -3522,6 +4208,39 @@ function Home() {
               <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 9a.75.75 0 00-1.5 0v2.25H9a.75.75 0 000 1.5h2.25V15a.75.75 0 001.5 0v-2.25H15a.75.75 0 000-1.5h-2.25V9z" clipRule="evenodd" />
             </svg>
           </button>
+          
+          <button 
+            onClick={() => {
+              // Initialize new route when opening the form
+              if (!showManualCreateForm) {
+                initializeManualRoute();
+                
+                // Ensure the form is properly displayed and not in a minimized state
+                setTimeout(() => {
+                  const formElement = document.querySelector('.manual-route-form');
+                  if (formElement) {
+                    formElement.classList.remove('minimized');
+                  }
+                }, 10);
+              }
+              
+              // Reset state when toggling the form
+              setShowManualCreateForm(!showManualCreateForm);
+              setShowGenerateForm(false);
+              setShowRoutesList(false);
+              setIsPinningLocation(false);
+              setIsRoutePinMode(false);
+              setRoutePinType(null);
+            }}
+            className={`button-with-tooltip flex items-center justify-center w-8 h-8 md:w-10 md:h-10 ${showManualCreateForm ? 'bg-indigo-700' : 'bg-indigo-600'} hover:bg-indigo-700 text-white rounded-full shadow-lg`}
+            data-tooltip="Manual Create"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 md:w-6 md:h-6">
+              <path fillRule="evenodd" d="M12 3.75a.75.75 0 01.75.75v6.75h6.75a.75.75 0 010 1.5h-6.75v6.75a.75.75 0 01-1.5 0v-6.75H4.5a.75.75 0 010-1.5h6.75V4.5a.75.75 0 01.75-.75z" clipRule="evenodd" />
+            </svg>
+          </button>
+          
+          
           
           <button 
             onClick={() => {
@@ -3619,6 +4338,421 @@ function Home() {
         </div>
       )}
       
+      {/* Manual Route Creation Form */}
+      {showManualCreateForm && (
+        <div className="manual-route-form absolute top-20 left-4 right-4 md:left-auto md:right-4 md:w-80 bg-white z-50 rounded-lg shadow-lg p-4 max-h-[80vh] overflow-y-auto pointer-events-auto transition-all duration-300">
+                        <style jsx>{`
+                .manual-route-form.minimized {
+                  transform: translateY(calc(100% - 40px));
+                  max-height: 40px;
+                  overflow: hidden;
+                }
+                .manual-route-form.minimized .form-header {
+                  margin-bottom: 0;
+                }
+                @media (max-width: 768px) {
+                  .manual-route-form.minimized {
+                    right: auto;
+                    width: auto;
+                    max-width: 200px;
+                    border-top-left-radius: 0;
+                    border-bottom-left-radius: 0;
+                    left: 0;
+                  }
+                }
+                .manual-route-form.minimized .pinning-active-indicator {
+                  display: flex;
+                  position: absolute;
+                  right: -10px;
+                  top: 10px;
+                  width: 12px;
+                  height: 12px;
+                  background-color: #FF4136;
+                  border-radius: 50%;
+                  animation: pulse-red 1.5s infinite;
+                }
+                @keyframes pulse-red {
+                  0% {
+                    transform: scale(0.95);
+                    box-shadow: 0 0 0 0 rgba(255, 65, 54, 0.7);
+                  }
+                  70% {
+                    transform: scale(1.1);
+                    box-shadow: 0 0 0 10px rgba(255, 65, 54, 0);
+                  }
+                  100% {
+                    transform: scale(0.95);
+                    box-shadow: 0 0 0 0 rgba(255, 65, 54, 0);
+                  }
+                }
+              `}</style>
+          <div className="form-header flex justify-between items-center mb-2">
+            <h3 className="font-bold text-lg">
+              Create Route Manually
+              {isRoutePinMode && <span className="pinning-active-indicator ml-2"></span>}
+            </h3>
+            <div className="flex space-x-2">
+              {/* Button to restore form from minimized state */}
+              <button
+                onClick={() => {
+                  const formElement = document.querySelector('.manual-route-form');
+                  if (formElement) {
+                    formElement.classList.remove('minimized');
+                    // Make sure we don't lose the reference to the form
+                    if (!formElement.classList.contains('minimized') && !showManualCreateForm) {
+                      setShowManualCreateForm(true);
+                    }
+                  }
+                }}
+                className="text-blue-500 hover:text-blue-700 minimize-restore-btn"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
+                </svg>
+              </button>
+              
+              {/* Close/Minimize button */}
+              <button 
+                onClick={() => {
+                  // Check if pinning mode is active before closing
+                  if (isRoutePinMode) {
+                    // Keep the form open but minimize it if in pin mode
+                    const formElement = document.querySelector('.manual-route-form');
+                    if (formElement) {
+                      formElement.classList.add('minimized');
+                    }
+                  } else {
+                    // If not in pin mode, close the form normally
+                    setShowManualCreateForm(false);
+                    // Make sure to clean up pin mode state
+                    setIsRoutePinMode(false);
+                    setRoutePinType(null);
+                    
+                    // Make sure the form is not minimized for the next time it's opened
+                    setTimeout(() => {
+                      const formElement = document.querySelector('.manual-route-form');
+                      if (formElement) {
+                        formElement.classList.remove('minimized');
+                      }
+                    }, 100);
+                  }
+                }} 
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          
+          {isRoutePinMode && (
+            <div className="bg-yellow-100 p-3 rounded-md mb-3 flex justify-between items-center">
+              <div className="text-sm text-yellow-800">
+                <strong>Pin Mode Active:</strong> Click on the map to add a {routePinType === 'start' ? 'start point' : routePinType === 'end' ? 'end point' : 'waypoint'}
+              </div>
+              <button 
+                onClick={() => {
+                  setIsRoutePinMode(false);
+                  setRoutePinType(null);
+                }}
+                className="text-xs py-1 px-2 bg-yellow-700 text-white rounded hover:bg-yellow-800"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          
+          <form onSubmit={handleManualRouteCreate}>
+            <div className="mb-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
+              <input
+                type="text"
+                value={manualRoute.title}
+                onChange={(e) => setManualRoute({...manualRoute, title: e.target.value})}
+                className="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                placeholder="Route title"
+                required
+              />
+            </div>
+            
+            <div className="mb-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
+              <textarea
+                value={manualRoute.description}
+                onChange={(e) => setManualRoute({...manualRoute, description: e.target.value})}
+                className="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                placeholder="Description"
+                rows="2"
+              />
+            </div>
+            
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Distance (km) <span className="text-xs font-normal text-gray-500">(Auto-calculated: {manualRoute.distance.toFixed(2)}km)</span>
+                </label>
+                <input
+                  type="number"
+                  value={manualRoute.distance}
+                  onChange={(e) => setManualRoute({...manualRoute, distance: parseFloat(e.target.value) || 0})}
+                  min="0"
+                  step="0.1"
+                  className="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Distance is calculated automatically when you add/modify points, but you can adjust it if needed.
+                </p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Elevation (m)</label>
+                <input
+                  type="number"
+                  value={manualRoute.elevationGain}
+                  onChange={(e) => setManualRoute({...manualRoute, elevationGain: parseFloat(e.target.value) || 0})}
+                  min="0"
+                  step="1"
+                  className="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                />
+              </div>
+            </div>
+            
+            <div className="mb-3">
+              <div className="flex flex-col space-y-2">
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    id="isPublic"
+                    checked={manualRoute.isPublic}
+                    onChange={(e) => setManualRoute({...manualRoute, isPublic: e.target.checked})}
+                    className="mr-2"
+                  />
+                  <label htmlFor="isPublic" className="text-sm font-medium text-gray-700">Public Route</label>
+                </div>
+                
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    id="connectWaypoints"
+                    checked={isConnectWaypoints}
+                    onChange={(e) => setIsConnectWaypoints(e.target.checked)}
+                    className="mr-2"
+                  />
+                  <label htmlFor="connectWaypoints" className="text-sm font-medium text-gray-700">
+                    Auto-connect waypoints
+                    <span className="ml-1 text-xs text-gray-500">(Coming soon)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            
+            <div className="mb-3">
+              <h3 className="text-sm font-medium text-gray-700 mb-1">Start Point</h3>
+              <div className="flex flex-col space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs mb-1">Longitude</label>
+                    <input
+                      type="number"
+                      value={manualRoute.startPoint.coordinates[0]}
+                      onChange={(e) => handleCoordinateChange('start', 0, 0, e.target.value)}
+                      step="0.0001"
+                      className="w-full p-2 border border-gray-300 rounded-md shadow-sm text-xs"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1">Latitude</label>
+                    <input
+                      type="number"
+                      value={manualRoute.startPoint.coordinates[1]}
+                      onChange={(e) => handleCoordinateChange('start', 0, 1, e.target.value)}
+                      step="0.0001"
+                      className="w-full p-2 border border-gray-300 rounded-md shadow-sm text-xs"
+                      required
+                    />
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => addCurrentLocation('start')}
+                    className="py-1 px-2 bg-blue-500 text-white rounded-md text-xs hover:bg-blue-600"
+                  >
+                    Use Current Location
+                  </button>
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoutePinMode(true);
+                      setRoutePinType('start');
+                    }}
+                    className={`py-1 px-2 ${isRoutePinMode && routePinType === 'start' ? 'bg-green-600' : 'bg-purple-600'} text-white rounded-md text-xs hover:bg-purple-700`}
+                  >
+                    Pin on Map
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            <div className="mb-3">
+              <h3 className="text-sm font-medium text-gray-700 mb-1">End Point</h3>
+              <div className="flex flex-col space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs mb-1">Longitude</label>
+                    <input
+                      type="number"
+                      value={manualRoute.endPoint.coordinates[0]}
+                      onChange={(e) => handleCoordinateChange('end', 0, 0, e.target.value)}
+                      step="0.0001"
+                      className="w-full p-2 border border-gray-300 rounded-md shadow-sm text-xs"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1">Latitude</label>
+                    <input
+                      type="number"
+                      value={manualRoute.endPoint.coordinates[1]}
+                      onChange={(e) => handleCoordinateChange('end', 0, 1, e.target.value)}
+                      step="0.0001"
+                      className="w-full p-2 border border-gray-300 rounded-md shadow-sm text-xs"
+                      required
+                    />
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => addCurrentLocation('end')}
+                    className="py-1 px-2 bg-blue-500 text-white rounded-md text-xs hover:bg-blue-600"
+                  >
+                    Use Current Location
+                  </button>
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoutePinMode(true);
+                      setRoutePinType('end');
+                    }}
+                    className={`py-1 px-2 ${isRoutePinMode && routePinType === 'end' ? 'bg-green-600' : 'bg-purple-600'} text-white rounded-md text-xs hover:bg-purple-700`}
+                  >
+                    Pin on Map
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            <div className="mb-3">
+              <div className="flex justify-between items-center mb-1">
+                <h3 className="text-sm font-medium text-gray-700">Path Coordinates</h3>
+                <button
+                  type="button"
+                  onClick={addPathCoordinate}
+                  className="py-1 px-2 bg-green-500 text-white text-xs rounded-md hover:bg-green-600"
+                >
+                  Add Point
+                </button>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <button
+                  type="button"
+                  onClick={() => addCurrentLocation('path')}
+                  className="py-1 px-2 bg-blue-500 text-white rounded-md text-xs hover:bg-blue-600"
+                >
+                  Add Current Location
+                </button>
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRoutePinMode(true);
+                    setRoutePinType('path');
+                  }}
+                  className={`py-1 px-2 ${isRoutePinMode && routePinType === 'path' ? 'bg-green-600' : 'bg-purple-600'} text-white rounded-md text-xs hover:bg-purple-700`}
+                >
+                  {isRoutePinMode && routePinType === 'path' ? 'Cancel Pin Mode' : 'Pin on Map'}
+                </button>
+              </div>
+              
+              {isRoutePinMode && routePinType === 'path' && (
+                <div className="bg-yellow-100 p-2 rounded-md mb-2">
+                  <p className="text-xs text-yellow-800">
+                    <strong>Click on the map</strong> to add waypoints. Click "Cancel Pin Mode" when done.
+                  </p>
+                </div>
+              )}
+              
+              <div className="max-h-40 overflow-y-auto border rounded-md p-2">
+                {manualRoute.path.coordinates.length === 0 ? (
+                  <p className="text-center text-gray-500 text-sm py-2">No path points added</p>
+                ) : (
+                  <div className="space-y-2">
+                    {manualRoute.path.coordinates.map((coord, index) => (
+                      <div key={index} className="flex items-center gap-1">
+                        <span className="text-xs font-bold">{index + 1}</span>
+                        <div className="grid grid-cols-2 gap-1 flex-grow">
+                          <input
+                            type="number"
+                            value={coord[0]}
+                            onChange={(e) => handleCoordinateChange('path', index, 0, e.target.value)}
+                            step="0.0001"
+                            className="w-full p-1 border border-gray-300 rounded-md shadow-sm text-xs"
+                            placeholder="Lng"
+                          />
+                          <input
+                            type="number"
+                            value={coord[1]}
+                            onChange={(e) => handleCoordinateChange('path', index, 1, e.target.value)}
+                            step="0.0001"
+                            className="w-full p-1 border border-gray-300 rounded-md shadow-sm text-xs"
+                            placeholder="Lat"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removePathCoordinate(index)}
+                          className="text-red-500 hover:text-red-700"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              <p className="text-xs text-gray-500 mt-1">
+                Add at least 2 points for a valid route.
+              </p>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setShowManualCreateForm(false)}
+                className="py-2 px-4 bg-gray-500 text-white rounded-md font-medium hover:bg-gray-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="py-2 px-4 bg-indigo-600 text-white rounded-md font-medium hover:bg-indigo-700"
+              >
+                Create Route
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      
       {/* Routes List Panel (Floating) - with higher z-index */}
       {showRoutesList && (
         <div className="absolute top-20 left-4 right-4 md:left-auto md:right-4 md:w-80 bg-white z-50 rounded-lg shadow-lg p-4 max-h-[70vh] overflow-y-auto pointer-events-auto">
@@ -3631,7 +4765,137 @@ function Home() {
             </button>
           </div>
           
-          {loading ? (
+          {/* Add tabs for All/Completed routes */}
+          <div className="flex border-b border-gray-200 mb-3">
+                          <button 
+                className={`py-2 px-4 text-sm font-medium ${routeListTab === 'all' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-500 hover:text-gray-700'}`}
+                onClick={() => {
+                  setRouteListTab('all');
+                  // Refresh route list when tab is selected
+                  fetchRoutes();
+                }}
+              >
+                All Routes
+              </button>
+            <button 
+              className={`py-2 px-4 text-sm font-medium ${routeListTab === 'completed' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-500 hover:text-gray-700'}`}
+              onClick={() => setRouteListTab('completed')}
+            >
+              Completed
+            </button>
+            <button 
+              className={`py-2 px-4 text-sm font-medium ${routeListTab === 'nearby' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-500 hover:text-gray-700'}`}
+              onClick={() => {
+                setRouteListTab('nearby');
+                // Force refresh of nearby routes when tab is selected
+                fetchNearbyRoutes();
+              }}
+            >
+              Nearby
+            </button>
+          </div>
+          
+          {routeListTab === 'nearby' ? (
+            // Nearby routes tab content
+            loadingNearby ? (
+              <div className="text-center py-8">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-700 mb-2"></div>
+                <p>Loading nearby routes...</p>
+              </div>
+            ) : nearbyRoutes.length === 0 ? (
+              <div className="text-center py-4 text-gray-500">
+                <p>No routes found near your location.</p>
+                <button 
+                  onClick={fetchNearbyRoutes}
+                  className="mt-2 py-2 px-4 bg-purple-600 text-white rounded-md hover:bg-purple-700"
+                >
+                  Refresh Nearby Routes
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {nearbyRoutes.map(route => (
+                  <div 
+                    key={route._id}
+                    className="bg-white p-3 border rounded-lg border-gray-200 hover:shadow-md transition-shadow duration-200"
+                    onClick={() => handleRouteSelect(route)}
+                  >
+                    <div className="flex justify-between items-start">
+                      <div className="flex flex-col">
+                        <h4 className="font-bold text-gray-800">{route.title || 'Unnamed Route'}</h4>
+                        <div className="flex items-start gap-1 mt-0.5">
+                          {route.isVerified && (
+                            <span className="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full">Verified</span>
+                          )}
+                        </div>
+                      </div>
+                      {route.user && (
+                        <div className="flex items-center text-xs text-gray-600">
+                          {route.user.profilePicture ? (
+                            <img 
+                              src={route.user.profilePicture} 
+                              alt={route.user.username || route.user.firstName} 
+                              className="w-5 h-5 rounded-full mr-1"
+                            />
+                          ) : (
+                            <div className="w-5 h-5 bg-gray-300 rounded-full mr-1 flex items-center justify-center text-xs text-white">
+                              {route.user.firstName?.charAt(0) || route.user.username?.charAt(0) || '?'}
+                            </div>
+                          )}
+                          <span>by {route.user.firstName || route.user.username}</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500">{route.description || 'No description'}</p>
+                    
+                    {/* Route path visualization with Leaflet map */}
+                    <div className="mt-2 relative">
+                      <RouteMiniMap route={route} />
+                      <div className="absolute top-1 left-1 bg-white bg-opacity-70 rounded px-1 text-xs">
+                        {route.distance ? `${route.distance.toFixed(1)} km` : ''}
+                      </div>
+                    </div>
+                    
+                    <div className="mt-2 flex justify-between text-xs text-gray-600">
+                      <span>Distance: {route.distance || '?'} km</span>
+                      <span>Elevation: {route.elevationGain || '?'} m</span>
+                    </div>
+                    
+                    <div className="mt-2 flex justify-between">
+                      <button 
+                        className="py-1 px-2 bg-green-600 text-white rounded text-xs hover:bg-green-700"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRouteSelect(route);
+                        }}
+                      >
+                        View
+                      </button>
+                      <button 
+                        className="py-1 px-2 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRouteSelect(route);
+                          setTimeout(() => toggleTracking(), 100);
+                        }}
+                      >
+                        Start
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                
+                <button 
+                  onClick={fetchNearbyRoutes}
+                  className="w-full py-2 mt-2 bg-gray-200 text-gray-700 rounded-md text-sm hover:bg-gray-300"
+                >
+                  Refresh Nearby Routes
+                </button>
+              </div>
+            )
+          ) : (
+            // Original tabs content (All and Completed)
+            loading ? (
             <div className="text-center py-8">Loading routes...</div>
           ) : error ? (
             <div className="text-center py-4 text-red-500">{error}</div>
@@ -3650,7 +4914,13 @@ function Home() {
             </div>
           ) : (
             <div className="space-y-3">
-              {userRoutes.map(route => (
+                {userRoutes
+                  .filter(route => {
+                    if (routeListTab === 'all') return true;
+                    if (routeListTab === 'completed') return route.completed;
+                    return true;
+                  })
+                  .map(route => (
                 <div 
                   key={route._id}
                   className={`bg-white p-3 border rounded-lg ${
@@ -3660,9 +4930,14 @@ function Home() {
                 >
                   <div className="flex justify-between items-start">
                   <h4 className="font-bold text-gray-800">{route.title || 'Unnamed Route'}</h4>
+                    <div className="flex gap-1">
                     {route.completed && (
                       <span className="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full">Completed</span>
                     )}
+                      {route.isVerified && (
+                        <span className="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full">Verified</span>
+                    )}
+                    </div>
                   </div>
                   <p className="text-xs text-gray-500">{route.description || 'No description'}</p>
                   
@@ -3689,6 +4964,7 @@ function Home() {
                     >
                       View
                     </button>
+                      {!route.completed && (
                     <button 
                       className="py-1 px-2 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
                       onClick={(e) => {
@@ -3699,6 +4975,7 @@ function Home() {
                     >
                       Start
                     </button>
+                      )}
                   </div>
                 </div>
               ))}
@@ -3710,6 +4987,7 @@ function Home() {
                 Refresh Routes
               </button>
             </div>
+            )
           )}
         </div>
       )}

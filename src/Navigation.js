@@ -19,6 +19,7 @@ function Navigation() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    localStorage.removeItem('isAdmin');
     setIsLoggedIn(false);
     setUser(null);
     navigate('/');
@@ -26,14 +27,23 @@ function Navigation() {
 
   const isAdmin = user && user.role === 'ADMIN';
 
-  // Navigation items configuration for reuse
-  const navItems = [
+  // Navigation items for regular users
+  const userNavItems = [
     { name: 'Home', path: '/home', icon: 'home', authRequired: true },
     { name: 'My Routes', path: '/routes', icon: 'route', authRequired: true },
     { name: 'Activities', path: '/activities', icon: 'activity', authRequired: true },
-    ...(isAdmin ? [{ name: 'Admin', path: '/admin', icon: 'admin', authRequired: true }] : []),
     { name: 'Profile', path: '/profile', icon: 'user', authRequired: true }
   ];
+
+  // Navigation items for admin users
+  const adminNavItems = [
+    { name: 'Home', path: '/admin', icon: 'admin', authRequired: true },
+    { name: 'Manage Routes', path: '/admin/routes', icon: 'route', authRequired: true },
+    { name: 'Profile', path: '/profile', icon: 'user', authRequired: true }
+  ];
+
+  // Choose which navigation items to display based on user role
+  const navItems = isAdmin ? adminNavItems : userNavItems;
 
   // Public navigation items
   const publicItems = [
@@ -49,8 +59,8 @@ function Navigation() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
           <div className="flex items-center">
-              <Link to={isLoggedIn ? '/home' : '/'} className="flex-shrink-0 flex items-center">
-              <span className="text-white font-bold text-xl">RunTracker</span>
+              <Link to={isLoggedIn ? (isAdmin ? '/admin' : '/home') : '/'} className="flex-shrink-0 flex items-center">
+              <span className="text-white font-bold text-xl">{isAdmin ? 'Admin Dashboard' : 'RunTracker'}</span>
             </Link>
           </div>
           
@@ -69,6 +79,16 @@ function Navigation() {
             </Link>
                 ))
               }
+
+              {/* Admin Login Link when not logged in */}
+              {!isLoggedIn && (
+                <Link 
+                  to="/admin/login" 
+                  className="px-3 py-2 rounded-md text-sm font-medium text-white hover:bg-green-500"
+                >
+                  Admin
+                </Link>
+              )}
             
             {!isLoggedIn ? (
               <>

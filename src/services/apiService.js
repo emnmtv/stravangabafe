@@ -1,8 +1,8 @@
 // API service for making HTTP requests to the backend
 
 // Base URL - Adjust this to match your server's address
-const API_BASE_URL = 'http://192.168.0.106:5000/api';
-
+const API_BASE_URL = 'http://192.168.0.101:5000/api';
+export const SOCKET_URL = 'http://192.168.0.101:5000';
 // Helper function to handle API responses
 const handleResponse = async (response) => {
   const data = await response.json();
@@ -53,6 +53,23 @@ export const login = async (credentials) => {
       success: false,
       message: error.message,
     };
+  }
+};
+
+export const adminLogin = async (credentials) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(credentials)
+    });
+    
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Admin login error:', error);
+    return { success: false, message: 'Network error during admin login' };
   }
 };
 
@@ -695,6 +712,192 @@ export const getActivityById = async (token, activityId) => {
       success: false,
       message: error.message || 'Failed to fetch activity details',
       data: null
+    };
+  }
+};
+
+// Get routes near a location
+export const getNearbyRoutes = async (params) => {
+  try {
+    // Build query params
+    const queryParams = new URLSearchParams();
+    if (params.latitude) queryParams.append('latitude', params.latitude);
+    if (params.longitude) queryParams.append('longitude', params.longitude);
+    if (params.maxDistance) queryParams.append('maxDistance', params.maxDistance);
+    
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+    console.log('Fetching nearby routes with params:', params);
+    
+    const response = await fetch(`${API_BASE_URL}/routes/nearby${queryString}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    const data = await handleResponse(response);
+    console.log('Nearby routes response:', data);
+    
+    return {
+      success: data.success || false,
+      count: data.count || 0,
+      message: data.message || '',
+      data: data.data || []
+    };
+  } catch (error) {
+    console.error('Get nearby routes error:', error);
+    return {
+      success: false,
+      count: 0,
+      message: error.message || 'Failed to fetch nearby routes',
+      data: []
+    };
+  }
+};
+
+// Admin: Verify a route
+export const verifyRoute = async (token, routeId) => {
+  try {
+    if (!token) throw new Error('Authentication token required');
+    if (!routeId) throw new Error('Route ID required');
+
+    const response = await fetch(`${API_BASE_URL}/admin/routes/verify/${routeId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Error verifying route:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to verify route'
+    };
+  }
+};
+
+// Admin: Create route manually
+export const adminCreateRoute = async (token, routeData) => {
+  try {
+    if (!token) throw new Error('Authentication token required');
+    if (!routeData) throw new Error('Route data required');
+
+    // Ensure required fields are present
+    const requiredFields = ['title', 'distance', 'startPoint', 'endPoint', 'path'];
+    for (const field of requiredFields) {
+      if (!routeData[field]) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/routes/create`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(routeData)
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Error creating route:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to create route'
+    };
+  }
+};
+
+// Add these new functions for admin route management
+export const getAdminPendingRoutes = async (token) => {
+  try {
+    console.log('Fetching pending routes for admin with token:', token ? 'valid token' : 'no token');
+    
+    const response = await fetch(`${API_BASE_URL}/admin/routes/pending`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const data = await handleResponse(response);
+    console.log('API getAdminPendingRoutes raw response:', data);
+    
+    return {
+      success: true,
+      data: data.data,
+      count: data.count
+    };
+  } catch (error) {
+    console.error('Error fetching pending routes for admin:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch pending routes',
+      data: []
+    };
+  }
+};
+
+export const getAdminAllRoutes = async (token) => {
+  try {
+    console.log('Fetching all routes for admin with token:', token ? 'valid token' : 'no token');
+    
+    const response = await fetch(`${API_BASE_URL}/admin/routes/all`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const data = await handleResponse(response);
+    console.log('API getAdminAllRoutes raw response:', data);
+    
+    return {
+      success: true,
+      data: data.data,
+      count: data.count
+    };
+  } catch (error) {
+    console.error('Error fetching all routes for admin:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch routes',
+      data: []
+    };
+  }
+};
+
+// Add function for users to manually create routes
+export const createRouteManually = async (token, routeData) => {
+  try {
+    console.log('Creating route manually with token:', token ? 'valid token' : 'no token');
+    
+    const response = await fetch(`${API_BASE_URL}/routes/create`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(routeData)
+    });
+    
+    const data = await handleResponse(response);
+    console.log('API createRouteManually response:', data);
+    
+    return {
+      success: true,
+      message: 'Route created successfully',
+      data: data.data
+    };
+  } catch (error) {
+    console.error('Error creating route manually:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to create route',
     };
   }
 };
