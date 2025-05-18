@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { getUserRoutes, generateRoute, saveRoute, startSessionWithActivityType, stopSession, resetSession, SOCKET_URL, getNearbyRoutes, createRouteManually } from '../services/apiService';
+import { getUserRoutes, generateRoute, saveRoute, startSessionWithActivityType, stopSession, resetSession, SOCKET_URL, getNearbyRoutes, createRouteManually, getImageUrl } from '../services/apiService';
 import io from 'socket.io-client';
 
 // Calculate distance between two points in kilometers
@@ -656,29 +656,53 @@ function Home() {
     }
   };
 
-
+  // Add state for tracking if form is minimized near the other state declarations in the Home component
+  const [isFormMinimized, setIsFormMinimized] = useState(false);
 
   // Function to fetch nearby routes using the user's current location
   const fetchNearbyRoutes = async () => {
-    if (!currentPosition) {
-      alert('Unable to determine your current location. Please enable location services and try again.');
-      setLoadingNearby(false);
-      return;
+    if (!currentPosition || !currentPosition[0] || !currentPosition[1]) {
+      // Try to get current location first
+      try {
+        updateCurrentLocation();
+        
+        // Show loading state while attempting to get location
+        setLoadingNearby(true);
+        
+        // If still no valid position after location update, show error
+        if (!currentPosition || !currentPosition[0] || !currentPosition[1]) {
+          alert('Unable to determine your current location. Please enable location services and try again.');
+          setLoadingNearby(false);
+          return;
+        }
+      } catch (error) {
+        alert('Error getting your location. Please enable location services and try again.');
+        setLoadingNearby(false);
+        return;
+      }
     }
     
     try {
       setLoadingNearby(true);
       console.log('Fetching nearby routes from position:', currentPosition);
       
+      // Use a reasonable search radius (5km) to ensure only truly local routes are shown
+      const searchRadius = 5; // km
+      
       // Get the user's current location for nearby search
       const response = await getNearbyRoutes({
         latitude: currentPosition[0],
         longitude: currentPosition[1],
-        maxDistance: 5 // Reduced to 5km to only show truly nearby routes
+        maxDistance: searchRadius
       });
       
       if (response.success) {
-        console.log('Nearby routes found:', response.data.length);
+        console.log(`Found ${response.data.length} routes within ${searchRadius}km of your location`);
+        
+        if (response.data.length === 0) {
+          // If no routes found in default radius, log a message
+          console.log('No routes found in the default search radius');
+        }
         
         // Process routes to add Leaflet-compatible coordinates
         const processedRoutes = response.data.map(route => {
@@ -763,20 +787,32 @@ function Home() {
             }
           }
           
+          // Calculate exact distance from user to route start point
+          const distanceToRoute = calculateDistance(
+            currentPosition,
+            [startPoint[0], startPoint[1]]
+          );
+          
           return {
             ...route,
             pathCoordinates,
             startPoint,
-            endPoint
+            endPoint,
+            distanceToRoute: parseFloat(distanceToRoute.toFixed(2)) // Distance from user in km
           };
         });
+        
+        // Sort routes by proximity to user
+        processedRoutes.sort((a, b) => a.distanceToRoute - b.distanceToRoute);
         
         setNearbyRoutes(processedRoutes);
       } else {
         console.error('Failed to fetch nearby routes:', response.message);
+        setNearbyRoutes([]);
       }
     } catch (err) {
       console.error('Error fetching nearby routes:', err);
+      setNearbyRoutes([]);
     } finally {
       setLoadingNearby(false);
     }
@@ -4340,61 +4376,82 @@ function Home() {
       
       {/* Manual Route Creation Form */}
       {showManualCreateForm && (
-        <div className="manual-route-form absolute top-20 left-4 right-4 md:left-auto md:right-4 md:w-80 bg-white z-50 rounded-lg shadow-lg p-4 max-h-[80vh] overflow-y-auto pointer-events-auto transition-all duration-300">
-                        <style jsx>{`
-                .manual-route-form.minimized {
-                  transform: translateY(calc(100% - 40px));
-                  max-height: 40px;
-                  overflow: hidden;
-                }
-                .manual-route-form.minimized .form-header {
-                  margin-bottom: 0;
-                }
-                @media (max-width: 768px) {
-                  .manual-route-form.minimized {
-                    right: auto;
-                    width: auto;
-                    max-width: 200px;
-                    border-top-left-radius: 0;
-                    border-bottom-left-radius: 0;
-                    left: 0;
-                  }
-                }
-                .manual-route-form.minimized .pinning-active-indicator {
-                  display: flex;
-                  position: absolute;
-                  right: -10px;
-                  top: 10px;
-                  width: 12px;
-                  height: 12px;
-                  background-color: #FF4136;
-                  border-radius: 50%;
-                  animation: pulse-red 1.5s infinite;
-                }
-                @keyframes pulse-red {
-                  0% {
-                    transform: scale(0.95);
-                    box-shadow: 0 0 0 0 rgba(255, 65, 54, 0.7);
-                  }
-                  70% {
-                    transform: scale(1.1);
-                    box-shadow: 0 0 0 10px rgba(255, 65, 54, 0);
-                  }
-                  100% {
-                    transform: scale(0.95);
-                    box-shadow: 0 0 0 0 rgba(255, 65, 54, 0);
-                  }
-                }
-              `}</style>
+        <div className={`manual-route-form absolute ${isFormMinimized ? 'bottom-16 left-2 top-auto' : 'top-20 left-4 right-4'} md:left-auto md:right-4 md:w-80 bg-white z-50 rounded-lg shadow-lg p-4 ${isFormMinimized ? 'minimized' : 'max-h-[70vh]'} overflow-y-auto pointer-events-auto transition-all duration-300`}>
+          <style jsx>{`
+            .manual-route-form.minimized {
+              max-height: 40px !important;
+              overflow: hidden;
+              border: 2px solid #4f46e5;
+              box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2);
+              width: auto;
+              padding: 8px 12px;
+              transform: none;
+            }
+            .manual-route-form.minimized .form-header {
+              margin-bottom: 0;
+            }
+            .manual-route-form.minimized button {
+              padding: 0;
+            }
+            @media (max-width: 768px) {
+              .manual-route-form {
+                max-height: calc(100vh - 200px) !important;
+              }
+              .manual-route-form.minimized {
+                width: auto;
+                max-width: 160px;
+                border-radius: 20px;
+                display: flex;
+                align-items: center;
+                border-bottom-left-radius: 20px;
+                border-top-left-radius: 20px;
+              }
+              .manual-route-form.minimized h3 {
+                font-size: 14px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+              }
+            }
+            .manual-route-form.minimized .pinning-active-indicator {
+              display: flex;
+              position: absolute;
+              right: -5px;
+              top: -5px;
+              width: 12px;
+              height: 12px;
+              background-color: #FF4136;
+              border-radius: 50%;
+              animation: pulse-red 1.5s infinite;
+            }
+            .manual-route-form.minimized .minimize-restore-btn {
+              display: none;
+            }
+            @keyframes pulse-red {
+              0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 65, 54, 0.7);
+              }
+              70% {
+                transform: scale(1.1);
+                box-shadow: 0 0 0 10px rgba(255, 65, 54, 0);
+              }
+              100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 65, 54, 0);
+              }
+            }
+          `}</style>
           <div className="form-header flex justify-between items-center mb-2">
             <h3 className="font-bold text-lg">
-              Create Route Manually
+              {isFormMinimized ? 'Route Editor' : 'Create Route Manually'}
               {isRoutePinMode && <span className="pinning-active-indicator ml-2"></span>}
             </h3>
             <div className="flex space-x-2">
               {/* Button to restore form from minimized state */}
               <button
                 onClick={() => {
+                  setIsFormMinimized(false);
                   const formElement = document.querySelector('.manual-route-form');
                   if (formElement) {
                     formElement.classList.remove('minimized');
@@ -4411,12 +4468,23 @@ function Home() {
                 </svg>
               </button>
               
-              {/* Close/Minimize button */}
+              {/* Minimize/Close button - different icon when minimized */}
               <button 
                 onClick={() => {
-                  // Check if pinning mode is active before closing
+                  // If already minimized, then restore it
+                  if (isFormMinimized) {
+                    setIsFormMinimized(false);
+                    const formElement = document.querySelector('.manual-route-form');
+                    if (formElement) {
+                      formElement.classList.remove('minimized');
+                    }
+                    return;
+                  }
+                  
+                  // Otherwise check if pinning mode is active before closing
                   if (isRoutePinMode) {
                     // Keep the form open but minimize it if in pin mode
+                    setIsFormMinimized(true);
                     const formElement = document.querySelector('.manual-route-form');
                     if (formElement) {
                       formElement.classList.add('minimized');
@@ -4429,6 +4497,7 @@ function Home() {
                     setRoutePinType(null);
                     
                     // Make sure the form is not minimized for the next time it's opened
+                    setIsFormMinimized(false);
                     setTimeout(() => {
                       const formElement = document.querySelector('.manual-route-form');
                       if (formElement) {
@@ -4439,9 +4508,15 @@ function Home() {
                 }} 
                 className="text-gray-500 hover:text-gray-700"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                </svg>
+                {isFormMinimized ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clipRule="evenodd" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                )}
               </button>
             </div>
           </div>
@@ -4490,11 +4565,11 @@ function Home() {
             <div className="grid grid-cols-2 gap-2 mb-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Distance (km) <span className="text-xs font-normal text-gray-500">(Auto-calculated: {manualRoute.distance.toFixed(2)}km)</span>
+                  Distance (km) <span className="text-xs font-normal text-gray-500">(Auto-calculated: {manualRoute.distance.toFixed(1)}km)</span>
                 </label>
                 <input
                   type="number"
-                  value={manualRoute.distance}
+                  value={parseFloat(manualRoute.distance.toFixed(1))}
                   onChange={(e) => setManualRoute({...manualRoute, distance: parseFloat(e.target.value) || 0})}
                   min="0"
                   step="0.1"
@@ -4814,6 +4889,9 @@ function Home() {
               </div>
             ) : (
               <div className="space-y-3">
+                <div className="text-sm text-center text-gray-600 mb-2">
+                  Showing routes within 5km of your current location
+                </div>
                 {nearbyRoutes.map(route => (
                   <div 
                     key={route._id}
@@ -4827,13 +4905,17 @@ function Home() {
                           {route.isVerified && (
                             <span className="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full">Verified</span>
                           )}
+                          {/* Add distance from user indicator */}
+                          <span className="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full">
+                            {route.distanceToRoute ? `${route.distanceToRoute} km away` : 'Nearby'}
+                          </span>
                         </div>
                       </div>
                       {route.user && (
                         <div className="flex items-center text-xs text-gray-600">
                           {route.user.profilePicture ? (
                             <img 
-                              src={route.user.profilePicture} 
+                              src={getImageUrl(route.user.profilePicture)} 
                               alt={route.user.username || route.user.firstName} 
                               className="w-5 h-5 rounded-full mr-1"
                             />

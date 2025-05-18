@@ -1,8 +1,22 @@
 // API service for making HTTP requests to the backend
 
 // Base URL - Adjust this to match your server's address
-const API_BASE_URL = 'http://192.168.0.101:5000/api';
-export const SOCKET_URL = 'http://192.168.0.101:5000';
+const API_BASE_URL = 'http://localhost:5500/api';
+export const SOCKET_URL = 'http://localhost:5500';
+
+// Helper function to format image URLs correctly
+export const getImageUrl = (imagePath) => {
+  if (!imagePath) return null;
+
+  // If it's already a full URL, return it
+  if (imagePath.startsWith('http')) {
+    return imagePath;
+  }
+
+  // Otherwise, combine with the SOCKET_URL
+  return `${SOCKET_URL}${imagePath}`;
+};
+
 // Helper function to handle API responses
 const handleResponse = async (response) => {
   const data = await response.json();
@@ -251,6 +265,47 @@ export const getRouteById = async (token, routeId) => {
       success: false,
       message: error.message || 'Failed to fetch route details',
       data: null
+    };
+  }
+};
+
+// Delete a route by ID
+export const deleteRoute = async (token, routeId) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+    
+    if (!routeId) {
+      return {
+        success: false,
+        message: 'Route ID is required'
+      };
+    }
+    
+    console.log(`Deleting route with ID: ${routeId}`);
+    const response = await fetch(`${API_BASE_URL}/routes/${routeId}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    const data = await handleResponse(response);
+    console.log('Delete route response:', data);
+    
+    return {
+      success: data.success || false,
+      message: data.message || 'Route deleted successfully'
+    };
+  } catch (error) {
+    console.error('Delete route error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to delete route'
     };
   }
 };
@@ -719,14 +774,43 @@ export const getActivityById = async (token, activityId) => {
 // Get routes near a location
 export const getNearbyRoutes = async (params) => {
   try {
+    // Validate required parameters
+    if (!params.latitude || !params.longitude) {
+      console.error('Missing location coordinates in getNearbyRoutes:', params);
+      return {
+        success: false,
+        count: 0,
+        message: 'Current location coordinates are required to find nearby routes',
+        data: []
+      };
+    }
+    
+    // Convert coordinates to numbers if they're strings
+    const latitude = parseFloat(params.latitude);
+    const longitude = parseFloat(params.longitude);
+    
+    // Validate coordinates are valid numbers
+    if (isNaN(latitude) || isNaN(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      console.error('Invalid coordinates in getNearbyRoutes:', { latitude, longitude });
+      return {
+        success: false,
+        count: 0,
+        message: 'Invalid coordinates. Latitude must be between -90 and 90, longitude between -180 and 180',
+        data: []
+      };
+    }
+    
     // Build query params
     const queryParams = new URLSearchParams();
-    if (params.latitude) queryParams.append('latitude', params.latitude);
-    if (params.longitude) queryParams.append('longitude', params.longitude);
-    if (params.maxDistance) queryParams.append('maxDistance', params.maxDistance);
+    queryParams.append('latitude', latitude);
+    queryParams.append('longitude', longitude);
     
-    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
-    console.log('Fetching nearby routes with params:', params);
+    // Set default max distance to 5km if not provided
+    const maxDistance = params.maxDistance ? parseFloat(params.maxDistance) : 5;
+    queryParams.append('maxDistance', maxDistance);
+    
+    const queryString = `?${queryParams.toString()}`;
+    console.log(`Fetching routes within ${maxDistance}km of location: [${latitude}, ${longitude}]`);
     
     const response = await fetch(`${API_BASE_URL}/routes/nearby${queryString}`, {
       method: 'GET',
@@ -736,7 +820,7 @@ export const getNearbyRoutes = async (params) => {
     });
     
     const data = await handleResponse(response);
-    console.log('Nearby routes response:', data);
+    console.log(`Found ${data.count || 0} routes near user's location`);
     
     return {
       success: data.success || false,
@@ -898,6 +982,696 @@ export const createRouteManually = async (token, routeData) => {
     return {
       success: false,
       message: error.message || 'Failed to create route',
+    };
+  }
+};
+
+// Update user privacy settings
+export const updatePrivacySettings = async (token, privacyData) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/profile/privacy`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(privacyData),
+    });
+    
+    return handleResponse(response);
+  } catch (error) {
+    console.error('Update privacy settings error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to update privacy settings',
+    };
+  }
+};
+
+// Get user activity statistics
+export const getUserStats = async (token, options = {}) => {
+  try {
+    // Build query params for date filtering and activity type
+    const queryParams = new URLSearchParams();
+    if (options.startDate) queryParams.append('startDate', options.startDate);
+    if (options.endDate) queryParams.append('endDate', options.endDate);
+    if (options.type) queryParams.append('type', options.type);
+    
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+    console.log('Fetching user stats with options:', options);
+    
+    const response = await fetch(`${API_BASE_URL}/activities/stats/summary${queryString}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const data = await handleResponse(response);
+    console.log('API getUserStats response:', data);
+    
+    return {
+      success: data.success || false,
+      message: data.message || '',
+      data: data.data || {
+        totalActivities: 0,
+        totalDistance: 0,
+        totalDuration: 0,
+        totalSteps: 0,
+        totalCalories: 0,
+        totalElevationGain: 0,
+        recentActivities: []
+      }
+    };
+  } catch (error) {
+    console.error('Get user stats error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch user statistics',
+      data: {
+        totalActivities: 0,
+        totalDistance: 0,
+        totalDuration: 0,
+        totalSteps: 0,
+        totalCalories: 0,
+        totalElevationGain: 0,
+        recentActivities: []
+      }
+    };
+  }
+};
+
+// Add weight entry without replacing current profile weight
+export const addWeightEntry = async (token, weightData) => {
+  try {
+    // Validate input
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+    
+    if (!weightData || !weightData.weight) {
+      return {
+        success: false,
+        message: 'Weight value is required'
+      };
+    }
+    
+    // Make sure weight is a valid number
+    const weight = parseFloat(weightData.weight);
+    if (isNaN(weight) || weight <= 0 || weight > 300) {
+      return {
+        success: false,
+        message: 'Weight must be a positive number between 1 and 300 kg'
+      };
+    }
+    
+    const response = await fetch(`${API_BASE_URL}/profile/weight`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(weightData)
+    });
+    
+    const data = await handleResponse(response);
+    
+    return {
+      success: true,
+      message: 'Weight entry added successfully',
+      data: data.data
+    };
+  } catch (error) {
+    console.error('Weight entry error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to add weight entry'
+    };
+  }
+};
+
+// Get weight history
+export const getWeightHistory = async (token, options = {}) => {
+  try {
+    // Build query params for date filtering
+    const queryParams = new URLSearchParams();
+    if (options.startDate) queryParams.append('startDate', options.startDate);
+    if (options.endDate) queryParams.append('endDate', options.endDate);
+    if (options.limit) queryParams.append('limit', options.limit);
+    
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+    console.log('Fetching weight history with options:', options);
+    
+    const response = await fetch(`${API_BASE_URL}/profile/weight/history${queryString}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    const data = await handleResponse(response);
+    console.log('API getWeightHistory response:', data);
+    
+    return {
+      success: data.success || false,
+      count: data.count || 0,
+      message: data.message || '',
+      data: data.data || []
+    };
+  } catch (error) {
+    console.error('Get weight history error:', error);
+    return {
+      success: false,
+      count: 0,
+      message: error.message || 'Failed to fetch weight history',
+      data: []
+    };
+  }
+};
+
+/**
+ * Get distance history for the current user
+ * @param {string} token - Auth token
+ * @param {Object} params - Optional query parameters (limit, startDate, endDate)
+ */
+export const getDistanceHistory = async (token, params = {}) => {
+  try {
+    // Build query string from params
+    const queryString = Object.keys(params)
+      .map(key => `${key}=${encodeURIComponent(params[key])}`)
+      .join('&');
+    
+    const url = `${API_BASE_URL}/profile/distance/history${queryString ? `?${queryString}` : ''}`;
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching distance history:', error);
+    return { success: false, message: 'Failed to fetch distance history' };
+  }
+};
+
+/**
+ * Get distance statistics for the current user
+ * @param {string} token - Auth token
+ * @param {string} period - Time period for stats ('week', 'month', 'year', 'all')
+ */
+export const getDistanceStats = async (token, period = 'all') => {
+  try {
+    const url = `${API_BASE_URL}/profile/distance/stats?period=${period}`;
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching distance stats:', error);
+    return { success: false, message: 'Failed to fetch distance statistics' };
+  }
+};
+
+/**
+ * Recalculate total distance for the current user
+ * @param {string} token - Auth token
+ */
+export const recalculateDistance = async (token) => {
+  try {
+    const url = `${API_BASE_URL}/profile/distance/recalculate`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    const data = await response.json();
+    console.log('Recalculate distance response:', data);
+    return data;
+  } catch (error) {
+    console.error('Error recalculating distance:', error);
+    return { success: false, message: 'Failed to recalculate total distance' };
+  }
+};
+
+// Challenge management
+export const createChallenge = async (token, challengeData) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+
+    // Validate required fields
+    const requiredFields = ['title', 'description', 'type', 'goal', 'startDate', 'endDate'];
+    for (const field of requiredFields) {
+      if (!challengeData[field]) {
+        return {
+          success: false,
+          message: `Missing required field: ${field}`
+        };
+      }
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/challenges`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(challengeData)
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Create challenge error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to create challenge'
+    };
+  }
+};
+
+export const getAllChallenges = async (token, isActive) => {
+  try {
+    const queryParams = isActive !== undefined ? `?active=${isActive}` : '';
+    
+    const response = await fetch(`${API_BASE_URL}/challenges${queryParams}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Get challenges error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch challenges',
+      data: []
+    };
+  }
+};
+
+export const getChallengeById = async (token, challengeId) => {
+  try {
+    if (!challengeId) {
+      return {
+        success: false,
+        message: 'Challenge ID is required'
+      };
+    }
+
+    const response = await fetch(`${API_BASE_URL}/challenges/${challengeId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Get challenge details error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch challenge details',
+      data: null
+    };
+  }
+};
+
+export const updateChallenge = async (token, challengeId, updateData) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+
+    if (!challengeId) {
+      return {
+        success: false,
+        message: 'Challenge ID is required'
+      };
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/challenges/${challengeId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(updateData)
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Update challenge error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to update challenge'
+    };
+  }
+};
+
+export const deleteChallenge = async (token, challengeId) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+
+    if (!challengeId) {
+      return {
+        success: false,
+        message: 'Challenge ID is required'
+      };
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/challenges/${challengeId}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Delete challenge error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to delete challenge'
+    };
+  }
+};
+
+export const joinChallenge = async (token, challengeId) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+
+    if (!challengeId) {
+      return {
+        success: false,
+        message: 'Challenge ID is required'
+      };
+    }
+
+    const response = await fetch(`${API_BASE_URL}/challenges/${challengeId}/join`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Join challenge error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to join challenge'
+    };
+  }
+};
+
+export const leaveChallenge = async (token, challengeId) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+
+    if (!challengeId) {
+      return {
+        success: false,
+        message: 'Challenge ID is required'
+      };
+    }
+
+    const response = await fetch(`${API_BASE_URL}/challenges/${challengeId}/leave`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Leave challenge error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to leave challenge'
+    };
+  }
+};
+
+export const getUserChallenges = async (token, status) => {
+  try {
+    const queryParams = status ? `?status=${status}` : '';
+    
+    const response = await fetch(`${API_BASE_URL}/user/challenges${queryParams}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Get user challenges error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch challenges',
+      data: []
+    };
+  }
+};
+
+export const getChallengeLeaderboard = async (token, challengeId) => {
+  try {
+    if (!challengeId) {
+      return {
+        success: false,
+        message: 'Challenge ID is required'
+      };
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/challenges/leaderboard/${challengeId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return await handleResponse(response);
+  } catch (error) {
+    console.error('Get challenge leaderboard error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to fetch leaderboard',
+      data: null
+    };
+  }
+};
+
+// Archive an activity without deleting it
+export const archiveActivity = async (token, activityId) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+    
+    if (!activityId) {
+      return {
+        success: false,
+        message: 'Activity ID is required'
+      };
+    }
+    
+    console.log(`Archiving activity with ID: ${activityId}`);
+    const response = await fetch(`${API_BASE_URL}/activities/${activityId}/archive`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    const data = await handleResponse(response);
+    console.log('Archive activity response:', data);
+    
+    return {
+      success: data.success || false,
+      message: data.message || 'Activity archived successfully',
+      data: data.data
+    };
+  } catch (error) {
+    console.error('Archive activity error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to archive activity'
+    };
+  }
+};
+
+// Get archived activities
+export const getArchivedActivities = async (token, options = {}) => {
+  try {
+    // Build query params
+    const queryParams = new URLSearchParams();
+    if (options.limit) queryParams.append('limit', options.limit);
+    if (options.skip) queryParams.append('skip', options.skip);
+    if (options.sort) queryParams.append('sort', options.sort);
+    
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+    console.log('Fetching archived activities with options:', options);
+    
+    const response = await fetch(`${API_BASE_URL}/activities/archived${queryString}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const data = await handleResponse(response);
+    console.log('API getArchivedActivities response:', data);
+    
+    return {
+      success: data.success || false,
+      count: data.count || 0,
+      total: data.total || 0,
+      message: data.message || '',
+      data: data.data || []
+    };
+  } catch (error) {
+    console.error('Get archived activities error:', error);
+    return {
+      success: false,
+      count: 0,
+      total: 0,
+      message: error.message || 'Failed to fetch archived activities',
+      data: []
+    };
+  }
+};
+
+// Restore an archived activity
+export const restoreActivity = async (token, activityId) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+    
+    if (!activityId) {
+      return {
+        success: false,
+        message: 'Activity ID is required'
+      };
+    }
+    
+    console.log(`Restoring activity with ID: ${activityId}`);
+    const response = await fetch(`${API_BASE_URL}/activities/${activityId}/restore`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    const data = await handleResponse(response);
+    console.log('Restore activity response:', data);
+    
+    return {
+      success: data.success || false,
+      message: data.message || 'Activity restored successfully',
+      data: data.data
+    };
+  } catch (error) {
+    console.error('Restore activity error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to restore activity'
+    };
+  }
+};
+
+// Update route details
+export const updateRoute = async (token, routeId, updateData) => {
+  try {
+    if (!token) {
+      return {
+        success: false,
+        message: 'Authentication token is required'
+      };
+    }
+    
+    if (!routeId) {
+      return {
+        success: false,
+        message: 'Route ID is required'
+      };
+    }
+    
+    console.log(`Updating route with ID: ${routeId}`, updateData);
+    
+    const response = await fetch(`${API_BASE_URL}/routes/${routeId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(updateData)
+    });
+    
+    const data = await handleResponse(response);
+    console.log('Update route response:', data);
+    
+    return {
+      success: data.success || false,
+      message: data.message || 'Route updated successfully',
+      data: data.data
+    };
+  } catch (error) {
+    console.error('Update route error:', error);
+    return {
+      success: false,
+      message: error.message || 'Failed to update route'
     };
   }
 };

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Polyline, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
-import { getUserRoutes, saveRoute } from '../services/apiService';
+import { getUserRoutes, saveRoute, deleteRoute, updateRoute } from '../services/apiService';
 import 'leaflet/dist/leaflet.css';
 
 // Fix for default marker icons in Leaflet with React
@@ -80,6 +80,13 @@ const MyRoutesPage = () => {
   const [activeTab, setActiveTab] = useState('all');
   const [selectedRoute, setSelectedRoute] = useState(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editedRoute, setEditedRoute] = useState({
+    title: '',
+    description: '',
+    isPublic: true
+  });
 
   // OLONGAPO_COORDINATES as fallback
   const OLONGAPO_COORDINATES = [14.8386, 120.2842];
@@ -208,13 +215,36 @@ const MyRoutesPage = () => {
   const handleRouteClick = (route) => {
     setSelectedRoute(route);
     setShowDetails(true);
+    setEditMode(false);
   };
 
   const handleCloseDetails = () => {
     setShowDetails(false);
+    setEditMode(false);
   };
 
-  const markAsCompleted = async (route) => {
+  const handleEditClick = (route) => {
+    setEditedRoute({
+      title: route.title || '',
+      description: route.description || '',
+      isPublic: route.isPublic !== false // Default to true if not specified
+    });
+    setEditMode(true);
+  };
+
+  const handleCancelEdit = () => {
+    setEditMode(false);
+  };
+
+  const handleInputChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setEditedRoute({
+      ...editedRoute,
+      [name]: type === 'checkbox' ? checked : value
+    });
+  };
+
+  const handleUpdateRoute = async () => {
     try {
       const token = localStorage.getItem('token');
       
@@ -223,23 +253,67 @@ const MyRoutesPage = () => {
         return;
       }
 
-      const updatedRoute = {
-        ...route,
-        completed: true
-      };
-
-      const response = await saveRoute(token, updatedRoute);
+      setLoading(true);
+      const response = await updateRoute(token, selectedRoute._id, editedRoute);
       
       if (response.success) {
-        alert('Route marked as completed!');
-        fetchRoutes(); // Refresh routes list
+        // Update the route in the local state
+        const updatedRoutes = routes.map(route => 
+          route._id === selectedRoute._id 
+            ? { ...route, ...editedRoute } 
+            : route
+        );
+        
+        setRoutes(updatedRoutes);
+        setSelectedRoute({ ...selectedRoute, ...editedRoute });
+        setEditMode(false);
+        alert('Route updated successfully!');
       } else {
         alert('Failed to update route: ' + (response.message || 'Unknown error'));
       }
     } catch (err) {
       console.error('Error updating route:', err);
       alert('An error occurred while updating the route');
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const handleDeleteRoute = async (routeId) => {
+    try {
+      const token = localStorage.getItem('token');
+      
+      if (!token) {
+        alert('You must be logged in to delete routes');
+        return;
+      }
+
+      setLoading(true);
+      const response = await deleteRoute(token, routeId);
+      
+      if (response.success) {
+        // Close modals and refresh routes list
+        setConfirmDelete(null);
+        setShowDetails(false);
+        fetchRoutes();
+        alert('Route deleted successfully!');
+      } else {
+        alert('Failed to delete route: ' + (response.message || 'Unknown error'));
+      }
+    } catch (err) {
+      console.error('Error deleting route:', err);
+      alert('An error occurred while deleting the route');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirmDelete = (route) => {
+    setConfirmDelete(route);
+  };
+
+  const cancelDelete = () => {
+    setConfirmDelete(null);
   };
 
   // Filter routes based on active tab
@@ -372,17 +446,31 @@ const MyRoutesPage = () => {
                     View Details
                   </button>
                   
-                  {!route.completed && (
+                  <div className="flex gap-2">
+                    {!route.completed && (
+                      <button 
+                        className="py-1 px-3 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedRoute(route);
+                          setShowDetails(true);
+                          handleEditClick(route);
+                        }}
+                      >
+                        Edit Details
+                      </button>
+                    )}
+                    
                     <button 
-                      className="py-1 px-3 bg-green-500 text-white rounded text-sm hover:bg-green-600"
+                      className="py-1 px-3 bg-red-500 text-white rounded text-sm hover:bg-red-600"
                       onClick={(e) => {
                         e.stopPropagation();
-                        markAsCompleted(route);
+                        handleConfirmDelete(route);
                       }}
                     >
-                      Mark Complete
+                      Delete
                     </button>
-                  )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -395,112 +483,211 @@ const MyRoutesPage = () => {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl">
             <div className="p-6 overflow-y-auto" style={{ maxHeight: 'calc(90vh - 2rem)' }}>
-              <div className="flex justify-between items-start mb-4">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-bold">{selectedRoute.title || 'Route Details'}</h2>
-                  {selectedRoute.isVerified && (
-                    <div className="flex items-center gap-1 bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs font-medium">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                      </svg>
-                      Verified Route
+              {!editMode ? (
+                <>
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl font-bold">{selectedRoute.title || 'Route Details'}</h2>
+                      {selectedRoute.isVerified && (
+                        <div className="flex items-center gap-1 bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs font-medium">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          Verified Route
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                <button 
-                  className="text-gray-500 hover:text-gray-700"
-                  onClick={handleCloseDetails}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-              
-              <div className="h-64 mb-4 rounded-lg overflow-hidden relative">
-                <button 
-                  className="absolute top-2 right-2 z-50 bg-white rounded-full p-2 shadow-md hover:bg-gray-100"
-                  onClick={handleCloseDetails}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-                <MapContainer
-                  key={`detail-map-${selectedRoute._id}`}
-                  bounds={L.latLngBounds(selectedRoute.pathCoordinates)}
-                  style={{ height: '100%', width: '100%' }}
-                  zoomControl={true}
-                >
-                  <TileLayer
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                  />
-                  
-                  <Polyline 
-                    positions={selectedRoute.pathCoordinates}
-                    color="#4CAF50"
-                    weight={5}
-                    opacity={0.8}
-                  />
-                  
-                  <Marker position={selectedRoute.startPoint} icon={startIcon}>
-                    <Popup>Start point</Popup>
-                  </Marker>
-                  
-                  <Marker position={selectedRoute.endPoint} icon={endIcon}>
-                    <Popup>End point</Popup>
-                  </Marker>
-                </MapContainer>
-              </div>
-              
-              <div className="mb-4">
-                <p className="text-gray-700 text-sm">{selectedRoute.description || 'No description provided.'}</p>
-              </div>
-              
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-                <div className="bg-gray-50 p-3 rounded">
-                  <div className="text-xs text-gray-500">Distance</div>
-                  <div className="text-lg font-bold">{selectedRoute.distance?.toFixed(2) || '?'} km</div>
-                </div>
-                
-                <div className="bg-gray-50 p-3 rounded">
-                  <div className="text-xs text-gray-500">Elevation Gain</div>
-                  <div className="text-lg font-bold">{selectedRoute.elevationGain || '0'} m</div>
-                </div>
-                
-                <div className="bg-gray-50 p-3 rounded">
-                  <div className="text-xs text-gray-500">Status</div>
-                  <div className={`text-lg font-bold ${selectedRoute.completed ? 'text-green-600' : 'text-amber-500'}`}>
-                    {selectedRoute.completed ? 'Completed' : 'Not Completed'}
+                    <button 
+                      className="text-gray-500 hover:text-gray-700"
+                      onClick={handleCloseDetails}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
                   </div>
-                </div>
-              </div>
-              
-              <div className="flex justify-between">
-                <button 
-                  className="py-2 px-4 bg-purple-600 text-white rounded hover:bg-purple-700"
-                  onClick={() => {
-                    handleCloseDetails();
-                    // Navigate to home with this route selected - this would require additional implementation
-                    window.location.href = `/`;
-                  }}
-                >
-                  Start This Route
-                </button>
-                
-                {!selectedRoute.completed && (
-                  <button 
-                    className="py-2 px-4 bg-green-500 text-white rounded hover:bg-green-600"
-                    onClick={() => {
-                      markAsCompleted(selectedRoute);
-                      handleCloseDetails();
-                    }}
-                  >
-                    Mark as Completed
-                  </button>
-                )}
-              </div>
+                  
+                  <div className="h-64 mb-4 rounded-lg overflow-hidden relative">
+                    <MapContainer
+                      key={`detail-map-${selectedRoute._id}`}
+                      bounds={L.latLngBounds(selectedRoute.pathCoordinates)}
+                      style={{ height: '100%', width: '100%' }}
+                      zoomControl={true}
+                    >
+                      <TileLayer
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                      />
+                      
+                      <Polyline 
+                        positions={selectedRoute.pathCoordinates}
+                        color="#4CAF50"
+                        weight={5}
+                        opacity={0.8}
+                      />
+                      
+                      <Marker position={selectedRoute.startPoint} icon={startIcon}>
+                        <Popup>Start point</Popup>
+                      </Marker>
+                      
+                      <Marker position={selectedRoute.endPoint} icon={endIcon}>
+                        <Popup>End point</Popup>
+                      </Marker>
+                    </MapContainer>
+                  </div>
+                  
+                  <div className="mb-4">
+                    <p className="text-gray-700 text-sm">{selectedRoute.description || 'No description provided.'}</p>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+                    <div className="bg-gray-50 p-3 rounded">
+                      <div className="text-xs text-gray-500">Distance</div>
+                      <div className="text-lg font-bold">{selectedRoute.distance?.toFixed(2) || '?'} km</div>
+                    </div>
+                    
+                    <div className="bg-gray-50 p-3 rounded">
+                      <div className="text-xs text-gray-500">Elevation Gain</div>
+                      <div className="text-lg font-bold">{selectedRoute.elevationGain || '0'} m</div>
+                    </div>
+                    
+                    <div className="bg-gray-50 p-3 rounded">
+                      <div className="text-xs text-gray-500">Status</div>
+                      <div className={`text-lg font-bold ${selectedRoute.completed ? 'text-green-600' : 'text-amber-500'}`}>
+                        {selectedRoute.completed ? 'Completed' : 'Not Completed'}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-between">
+                    <div className="flex gap-2">
+                      <button 
+                        className="py-2 px-4 bg-purple-600 text-white rounded hover:bg-purple-700"
+                        onClick={() => {
+                          handleCloseDetails();
+                          // Navigate to home with this route selected
+                          window.location.href = `/`;
+                        }}
+                      >
+                        Start This Route
+                      </button>
+                      
+                      <button 
+                        className="py-2 px-4 bg-blue-500 text-white rounded hover:bg-blue-600"
+                        onClick={() => handleEditClick(selectedRoute)}
+                      >
+                        Edit Details
+                      </button>
+                    </div>
+                    
+                    <button 
+                      className="py-2 px-4 bg-red-500 text-white rounded hover:bg-red-600"
+                      onClick={() => handleConfirmDelete(selectedRoute)}
+                    >
+                      Delete Route
+                    </button>
+                  </div>
+                </>
+              ) : (
+                // Edit Mode UI
+                <>
+                  <div className="flex justify-between items-start mb-4">
+                    <h2 className="text-xl font-bold">Edit Route</h2>
+                    <button 
+                      className="text-gray-500 hover:text-gray-700"
+                      onClick={handleCancelEdit}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-4 mb-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Route Title
+                      </label>
+                      <input
+                        type="text"
+                        name="title"
+                        value={editedRoute.title}
+                        onChange={handleInputChange}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        placeholder="Enter route title"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Description
+                      </label>
+                      <textarea
+                        name="description"
+                        value={editedRoute.description}
+                        onChange={handleInputChange}
+                        rows={4}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                        placeholder="Enter route description"
+                      ></textarea>
+                    </div>
+                    
+                    <div className="flex items-center">
+                      <input
+                        type="checkbox"
+                        id="isPublic"
+                        name="isPublic"
+                        checked={editedRoute.isPublic}
+                        onChange={handleInputChange}
+                        className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+                      />
+                      <label htmlFor="isPublic" className="ml-2 block text-sm text-gray-700">
+                        Make this route public
+                      </label>
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-end gap-3">
+                    <button
+                      className="py-2 px-4 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
+                      onClick={handleCancelEdit}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="py-2 px-4 bg-purple-600 text-white rounded hover:bg-purple-700"
+                      onClick={handleUpdateRoute}
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Delete confirmation modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+            <h3 className="text-xl font-bold mb-4">Delete Route</h3>
+            <p className="mb-6">Are you sure you want to delete the route "{confirmDelete.title}"? This action cannot be undone.</p>
+            
+            <div className="flex justify-end gap-3">
+              <button 
+                className="py-2 px-4 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
+                onClick={cancelDelete}
+              >
+                Cancel
+              </button>
+              <button 
+                className="py-2 px-4 bg-red-500 text-white rounded hover:bg-red-600"
+                onClick={() => handleDeleteRoute(confirmDelete._id)}
+              >
+                Delete
+              </button>
             </div>
           </div>
         </div>

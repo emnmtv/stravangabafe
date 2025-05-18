@@ -32,6 +32,7 @@ function Navigation() {
     { name: 'Home', path: '/home', icon: 'home', authRequired: true },
     { name: 'My Routes', path: '/routes', icon: 'route', authRequired: true },
     { name: 'Activities', path: '/activities', icon: 'activity', authRequired: true },
+    { name: 'Dashboard', path: '/user-dashboard', icon: 'dashboard', authRequired: true },
     { name: 'Profile', path: '/profile', icon: 'user', authRequired: true }
   ];
 
@@ -39,6 +40,7 @@ function Navigation() {
   const adminNavItems = [
     { name: 'Home', path: '/admin', icon: 'admin', authRequired: true },
     { name: 'Manage Routes', path: '/admin/routes', icon: 'route', authRequired: true },
+    { name: 'Challenges', path: '/admin/challenges', icon: 'challenge', authRequired: true },
     { name: 'Profile', path: '/profile', icon: 'user', authRequired: true }
   ];
 
@@ -157,9 +159,19 @@ function Navigation() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                     </svg>
                   )}
+                  {item.icon === 'dashboard' && (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l9-5-9-5-9 5 9 5z" />
+                    </svg>
+                  )}
                   {item.icon === 'user' && (
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  )}
+                  {item.icon === 'challenge' && (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l9-5-9-5-9 5 9 5z" />
                     </svg>
                   )}
                   <span className="text-xs mt-1">{item.name}</span>

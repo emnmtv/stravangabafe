@@ -6,9 +6,11 @@ import Home from './components/Home';
 import ProfilePage from './components/ProfilePage';
 import ActivitiesPage from './components/ActivitiesPage';
 import MyRoutesPage from './components/MyRoutesPage';
+import UserDashboard from './components/UserDashboard';
 import AdminRoutesPage from './components/admin/AdminRoutesPage';
 import AdminLoginPage from './adminLognPage';
-
+import AdminChallenges from './components/admin/AdminChallenges';
+import ArchivedActivities from './components/ArchivedActivities';
 // Redirect authenticated users away from login/register pages
 const RedirectIfLoggedIn = ({ children }) => {
   const isLoggedIn = !!localStorage.getItem('token');
@@ -72,6 +74,17 @@ const AppRouter = () => {
           <ActivitiesPage />
         </ProtectedRoute>
       } />
+      <Route path="/archived-activities" element={
+        <ProtectedRoute>
+          <ArchivedActivities />
+        </ProtectedRoute>
+      } />
+      <Route path="/user-dashboard" element={
+        <ProtectedRoute>
+          <UserDashboard />
+        </ProtectedRoute>
+      } />
+     
       <Route path="/profile" element={
         <ProtectedRoute>
           <ProfilePage />
@@ -87,6 +100,11 @@ const AppRouter = () => {
       <Route path="/admin/routes" element={
         <ProtectedRoute requiredRole="ADMIN">
           <AdminRoutesPage />
+        </ProtectedRoute>
+      } />
+      <Route path="/admin/challenges" element={
+        <ProtectedRoute requiredRole="ADMIN">
+          <AdminChallenges />
         </ProtectedRoute>
       } />
 
