@@ -1,8 +1,8 @@
 // API service for making HTTP requests to the backend
 
 // Base URL - Adjust this to match your server's address
-const API_BASE_URL = 'http://localhost:5500/api';
-export const SOCKET_URL = 'http://localhost:5500';
+const API_BASE_URL = 'http://localhost:5600/api';
+export const SOCKET_URL = 'http://localhost:5600';
 
 // Helper function to format image URLs correctly
 export const getImageUrl = (imagePath) => {
@@ -15,6 +15,41 @@ export const getImageUrl = (imagePath) => {
 
   // Otherwise, combine with the SOCKET_URL
   return `${SOCKET_URL}${imagePath}`;
+};
+
+// Get user role from the user profile
+export const getUserRole = async (token) => {
+  try {
+    // Get the user profile data which contains the role
+    const response = await fetch(`${API_BASE_URL}/profile`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const data = await handleResponse(response);
+    
+    if (data.success && data.data && data.data.role) {
+      return {
+        success: true,
+        role: data.data.role
+      };
+    }
+    
+    return {
+      success: false,
+      role: 'USER', // Default to USER if not found
+      message: 'Could not determine user role'
+    };
+  } catch (error) {
+    console.error('Get user role error:', error);
+    return {
+      success: false,
+      role: 'USER', // Default to USER on error
+      message: error.message,
+    };
+  }
 };
 
 // Helper function to handle API responses

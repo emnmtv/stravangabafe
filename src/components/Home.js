@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { getUserRoutes, generateRoute, saveRoute, startSessionWithActivityType, stopSession, resetSession, SOCKET_URL, getNearbyRoutes, createRouteManually, getImageUrl } from '../services/apiService';
+import { getUserRoutes, generateRoute, saveRoute, startSessionWithActivityType, stopSession, resetSession, SOCKET_URL, getNearbyRoutes, createRouteManually, getImageUrl, getUserRole } from '../services/apiService';
 import io from 'socket.io-client';
 
 // Calculate distance between two points in kilometers
@@ -543,6 +543,10 @@ function Home() {
   
   // Add activity type state
   const [activityType, setActivityType] = useState('run');
+  
+  // Add user role state
+  const [userRole, setUserRole] = useState('USER');
+  const [isAdmin, setIsAdmin] = useState(false);
   
   // Remove isLiveTracking as tracking is now integrated
   // [isLiveTracking removed]
@@ -1425,6 +1429,11 @@ function Home() {
     const token = localStorage.getItem('token');
     if (!token) {
       alert('Please login first to generate routes');
+      return;
+    }
+    
+    if (!isAdmin) {
+      alert('Route generation is currently restricted to administrators only');
       return;
     }
     
@@ -3790,6 +3799,11 @@ function Home() {
         return;
       }
       
+      if (!isAdmin) {
+        alert('Manual route creation is currently restricted to administrators only');
+        return;
+      }
+      
       // Validate inputs
       if (!manualRoute.title || manualRoute.path.coordinates.length < 2) {
         alert('Please provide a title and at least 2 path coordinates');
@@ -3989,6 +4003,26 @@ function Home() {
     // Calculate the distance using the route coordinates
     return calculateRouteDistance(fullPath);
   };
+
+  // Fetch user role on component mount
+  useEffect(() => {
+    const fetchUserRole = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (token) {
+          const roleData = await getUserRole(token);
+          if (roleData.success) {
+            setUserRole(roleData.role);
+            setIsAdmin(roleData.role === 'ADMIN');
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user role:', error);
+      }
+    };
+
+    fetchUserRole();
+  }, []);
 
   if (loading && !currentPosition) {
     return (
@@ -4230,51 +4264,55 @@ function Home() {
             </svg>
           </button>
           
-          <button 
-            onClick={() => {
-              setShowGenerateForm(!showGenerateForm);
-              setShowRoutesList(false);
-              setIsPinningLocation(false);
-              setShowManualCreateForm(false);
-            }}
-            className={`button-with-tooltip flex items-center justify-center w-8 h-8 md:w-10 md:h-10 ${showGenerateForm ? 'bg-green-700' : 'bg-green-600'} hover:bg-green-700 text-white rounded-full shadow-lg`}
-            data-tooltip="Generate Route"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 md:w-6 md:h-6">
-              <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 9a.75.75 0 00-1.5 0v2.25H9a.75.75 0 000 1.5h2.25V15a.75.75 0 001.5 0v-2.25H15a.75.75 0 000-1.5h-2.25V9z" clipRule="evenodd" />
-            </svg>
-          </button>
+          {isAdmin && (
+            <button 
+              onClick={() => {
+                setShowGenerateForm(!showGenerateForm);
+                setShowRoutesList(false);
+                setIsPinningLocation(false);
+                setShowManualCreateForm(false);
+              }}
+              className={`button-with-tooltip flex items-center justify-center w-8 h-8 md:w-10 md:h-10 ${showGenerateForm ? 'bg-green-700' : 'bg-green-600'} hover:bg-green-700 text-white rounded-full shadow-lg`}
+              data-tooltip="Generate Route"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 md:w-6 md:h-6">
+                <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 9a.75.75 0 00-1.5 0v2.25H9a.75.75 0 000 1.5h2.25V15a.75.75 0 001.5 0v-2.25H15a.75.75 0 000-1.5h-2.25V9z" clipRule="evenodd" />
+              </svg>
+            </button>
+          )}
           
-          <button 
-            onClick={() => {
-              // Initialize new route when opening the form
-              if (!showManualCreateForm) {
-                initializeManualRoute();
+          {isAdmin && (
+            <button 
+              onClick={() => {
+                // Initialize new route when opening the form
+                if (!showManualCreateForm) {
+                  initializeManualRoute();
+                  
+                  // Ensure the form is properly displayed and not in a minimized state
+                  setTimeout(() => {
+                    const formElement = document.querySelector('.manual-route-form');
+                    if (formElement) {
+                      formElement.classList.remove('minimized');
+                    }
+                  }, 10);
+                }
                 
-                // Ensure the form is properly displayed and not in a minimized state
-                setTimeout(() => {
-                  const formElement = document.querySelector('.manual-route-form');
-                  if (formElement) {
-                    formElement.classList.remove('minimized');
-                  }
-                }, 10);
-              }
-              
-              // Reset state when toggling the form
-              setShowManualCreateForm(!showManualCreateForm);
-              setShowGenerateForm(false);
-              setShowRoutesList(false);
-              setIsPinningLocation(false);
-              setIsRoutePinMode(false);
-              setRoutePinType(null);
-            }}
-            className={`button-with-tooltip flex items-center justify-center w-8 h-8 md:w-10 md:h-10 ${showManualCreateForm ? 'bg-indigo-700' : 'bg-indigo-600'} hover:bg-indigo-700 text-white rounded-full shadow-lg`}
-            data-tooltip="Manual Create"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 md:w-6 md:h-6">
-              <path fillRule="evenodd" d="M12 3.75a.75.75 0 01.75.75v6.75h6.75a.75.75 0 010 1.5h-6.75v6.75a.75.75 0 01-1.5 0v-6.75H4.5a.75.75 0 010-1.5h6.75V4.5a.75.75 0 01.75-.75z" clipRule="evenodd" />
-            </svg>
-          </button>
+                // Reset state when toggling the form
+                setShowManualCreateForm(!showManualCreateForm);
+                setShowGenerateForm(false);
+                setShowRoutesList(false);
+                setIsPinningLocation(false);
+                setIsRoutePinMode(false);
+                setRoutePinType(null);
+              }}
+              className={`button-with-tooltip flex items-center justify-center w-8 h-8 md:w-10 md:h-10 ${showManualCreateForm ? 'bg-indigo-700' : 'bg-indigo-600'} hover:bg-indigo-700 text-white rounded-full shadow-lg`}
+              data-tooltip="Manual Create"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 md:w-6 md:h-6">
+                <path fillRule="evenodd" d="M12 3.75a.75.75 0 01.75.75v6.75h6.75a.75.75 0 010 1.5h-6.75v6.75a.75.75 0 01-1.5 0v-6.75H4.5a.75.75 0 010-1.5h6.75V4.5a.75.75 0 01.75-.75z" clipRule="evenodd" />
+              </svg>
+            </button>
+          )}
           
           
           
@@ -4326,7 +4364,7 @@ function Home() {
       {/* Integrated tracking panel, no separate live tracking panel needed */}
       
       {/* Route Generation Panel (Floating) - with higher z-index */}
-      {showGenerateForm && (
+      {showGenerateForm && isAdmin && (
         <div className="absolute top-20 left-4 right-4 md:left-auto md:right-4 md:w-80 bg-white z-50 rounded-lg shadow-lg p-4 pointer-events-auto">
           <div className="flex justify-between items-center mb-2">
             <h3 className="font-bold text-lg">Generate Route</h3>
@@ -4375,7 +4413,7 @@ function Home() {
       )}
       
       {/* Manual Route Creation Form */}
-      {showManualCreateForm && (
+      {showManualCreateForm && isAdmin && (
         <div className={`manual-route-form absolute ${isFormMinimized ? 'bottom-16 left-2 top-auto' : 'top-20 left-4 right-4'} md:left-auto md:right-4 md:w-80 bg-white z-50 rounded-lg shadow-lg p-4 ${isFormMinimized ? 'minimized' : 'max-h-[70vh]'} overflow-y-auto pointer-events-auto transition-all duration-300`}>
           <style jsx>{`
             .manual-route-form.minimized {
